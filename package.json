@@ -1,0 +1,37 @@
+{
+  "name": "machinectl",
+  "version": "0.3.0",
+  "type": "module",
+  "bin": {
+    "machinectl": "./dist/machinectl"
+  },
+  "files": [
+    "dist/machinectl",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "kill-port": "lsof -ti:7331 | xargs kill -9 2>/dev/null || true",
+    "start": "bun run kill-port && bun run src/index.ts",
+    "dev": "bun run kill-port && bun --watch src/index.ts",
+    "build": "bun build --compile --minify src/index.ts --outfile dist/machinectl",
+    "build:all": "bun run build:macos-arm64 && bun run build:macos-x64 && bun run build:linux-x64",
+    "build:macos-arm64": "bun build --compile --minify --target=bun-darwin-arm64 src/index.ts --outfile dist/machinectl-macos-arm64",
+    "build:macos-x64": "bun build --compile --minify --target=bun-darwin-x64 src/index.ts --outfile dist/machinectl-macos-x64",
+    "build:linux-x64": "bun build --compile --minify --target=bun-linux-x64 src/index.ts --outfile dist/machinectl-linux-x64",
+    "daemon": "bun run build && nohup ./dist/machinectl > /tmp/machinectl.log 2>&1 & echo $! > /tmp/machinectl.pid && echo 'machinectl running (pid: '$(cat /tmp/machinectl.pid)')'",
+    "daemon:stop": "pkill -f 'dist/machinectl' && echo 'machinectl stopped'",
+    "daemon:status": "pgrep -f 'dist/machinectl' && echo 'running' || echo 'not running'",
+    "daemon:logs": "tail -f /tmp/machinectl.log"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.0.0",
+    "@modelcontextprotocol/sdk": "^1.24.3",
+    "hono": "^4.10.8",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.2",
+    "typescript": "^5.9.3"
+  }
+}
