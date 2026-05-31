@@ -177,7 +177,7 @@ Agent processes inherit the daemon's user environment and local CLI credentials.
 
 ## Audit
 
-Audit behavior is implemented by the Worker endpoint, not by this daemon. In the compatible Worker implementation currently used by the author, a post-execution receipt is attempted in `AUDIT_KV`, keyed `machinectl:<email>:<ts>:<rand>` with a 90-day TTL. The current receipt shape includes timestamp, tool name, **raw arguments**, ok/error, and a result-content preview capped at 2 KB. This may retain sensitive material such as commands, prompt text, paths, clipboard input, or file/output excerpts. Do not use secret-bearing inputs or request sensitive output unless you trust and have reviewed your Worker's receipt policy.
+Audit behavior is implemented by the Worker endpoint, not by this daemon. In one compatible reference implementation, a post-execution receipt is attempted in a KV namespace, keyed `machinectl:<identity>:<ts>:<rand>` with a 90-day TTL. Its current receipt shape includes timestamp, tool name, **raw arguments**, ok/error, and a result-content preview capped at 2 KB. A Worker built this way may retain sensitive material such as commands, prompt text, paths, clipboard input, or file/output excerpts. Do not use secret-bearing inputs or request sensitive output unless you trust and have reviewed your Worker's receipt policy.
 
 Receipts are written after execution; a Worker-side receipt write failure can occur after a laptop action has already completed. Operators should implement the audit retention, redaction, alerting, and failure policy appropriate to their deployment.
 
