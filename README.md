@@ -4,7 +4,7 @@ Laptop-side daemon for exposing local tools to an MCP client through an authenti
 
 `machinectl` does not open an inbound server or create a tunnel. It connects outbound to a compatible Worker endpoint, publishes its tool catalog, executes relayed tool calls locally, and sends results back over the same WebSocket.
 
-This repository contains the laptop daemon only. You must provide a compatible Worker-side endpoint and its authentication and audit policy.
+This repository includes the laptop daemon and a deployable reference Cloudflare Worker relay under [`examples/cloudflare-worker-relay`](./examples/cloudflare-worker-relay/). The relay's authentication and audit policy are part of your security boundary.
 
 ## Architecture
 
@@ -29,7 +29,7 @@ When the daemon disconnects, no laptop tools are callable through MCP `tools/lis
 ## Requirements
 
 - Node.js 20 or later
-- A compatible Worker-side `MachineHost` endpoint
+- A compatible Worker-side `MachineHost` endpoint, such as the included [`examples/cloudflare-worker-relay`](./examples/cloudflare-worker-relay/) implementation
 - `cloudflared` if the endpoint uses Cloudflare Access authentication
 - macOS or Linux for platform-dependent desktop tools
 
@@ -42,9 +42,24 @@ npm install
 npm run build
 ```
 
-## Configure
+## Deploy a relay
 
-Set the URL of a trusted compatible Worker endpoint:
+A deployable Cloudflare Worker relay example is included:
+
+```bash
+cd examples/cloudflare-worker-relay
+npm install
+cp wrangler.jsonc.example wrangler.jsonc
+# Edit wrangler.jsonc with your hostname and Cloudflare Access app values.
+npm run typecheck
+npm run deploy
+```
+
+See [`examples/cloudflare-worker-relay/README.md`](./examples/cloudflare-worker-relay/README.md) for Access configuration, endpoint behavior, limits, and receipt handling.
+
+## Configure the daemon
+
+Set the URL of your deployed trusted Worker endpoint:
 
 ```bash
 export MACHINECTL_URL=https://machinectl.example.com
@@ -169,7 +184,7 @@ Use `agent_status`, `agent_logs`, and `agent_stop` to monitor or terminate it. L
 
 ## Authentication and audit boundary
 
-The Worker endpoint is outside this package and is part of the security boundary. It is responsible for:
+The Worker endpoint is part of the security boundary. The included reference relay is a starting implementation; review its policy before use. A relay is responsible for:
 
 - authenticating MCP callers and laptop WebSocket connections;
 - routing a caller to the intended machine;
@@ -177,7 +192,7 @@ The Worker endpoint is outside this package and is part of the security boundary
 - deciding whether and how tool calls are audited;
 - retaining, redacting, or discarding sensitive request/result material.
 
-A Worker implementation may retain tool arguments or output excerpts in its audit store. Review that behavior before transmitting secrets, reading sensitive files, copying credentials, or returning secret-bearing command output.
+A Worker implementation may retain tool arguments or output excerpts in its audit store. Review that behavior before transmitting secrets, reading sensitive files, copying credentials, or returning secret-bearing command output. The included reference relay stores content-minimizing post-call receipts when its optional KV binding is configured; it does not store tool result content.
 
 ## Security model
 
@@ -204,7 +219,7 @@ A compatible Worker endpoint must support the protocol in [`src/protocol.ts`](./
 - laptop responds with correlated `result` frames;
 - Worker exposes an MCP endpoint, typically `POST /machinectl/mcp`, to its authenticated clients.
 
-The Worker implementation is not included in this repository.
+A deployable reference implementation is provided in [`examples/cloudflare-worker-relay`](./examples/cloudflare-worker-relay/).
 
 ## Development
 

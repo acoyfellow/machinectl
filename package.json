@@ -17,6 +17,7 @@
   },
   "files": [
     "dist/",
+    "examples/cloudflare-worker-relay/",
     "README.md",
     "SECURITY.md",
     "LICENSE"

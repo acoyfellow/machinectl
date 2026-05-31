@@ -19,3 +19,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
+      - run: npm install
+        working-directory: examples/cloudflare-worker-relay
+      - run: npm run typecheck
+        working-directory: examples/cloudflare-worker-relay
