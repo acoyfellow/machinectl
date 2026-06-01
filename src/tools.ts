@@ -121,6 +121,19 @@ const mouseTool = tool(
   },
 );
 
+const localAuthStatusTool = tool(
+  "local_auth_status",
+  "Return a secret-free cf-local health summary for laptop Cloudflare resources. Use this to diagnose auth before asking the user to relink anything.",
+  { type: "object", properties: {} },
+  z.object({}).strict(),
+  async () => {
+    const bin = process.env.CF_LOCAL_BIN ?? pathJoin(process.env.HOME ?? "", ".local", "bin", "cf-local");
+    const result = await run(bin, ["status", "--json"]);
+    if (result.code !== 0) throw new Error(result.stderr || "cf-local status failed");
+    return result.stdout.trim();
+  },
+);
+
 const keyboardTool = tool(
   "keyboard",
   "Type text or send keys/shortcuts on macOS. Requires user-approved Accessibility permission.",
@@ -154,5 +167,5 @@ function run(command: string, args: string[]): Promise<{ code: number | null; st
 }
 
 export function buildToolRegistry(): RegisteredTool[] {
-  return [shellTool, screenshotTool, mouseTool, keyboardTool, ...buildAgentSessionTools()];
+  return [shellTool, screenshotTool, mouseTool, keyboardTool, localAuthStatusTool, ...buildAgentSessionTools()];
 }
