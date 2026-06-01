@@ -12,7 +12,7 @@ Run authenticated MCP tools on your laptop through an outbound connection to a C
 | `screenshot` | Capture the current screen as a PNG image. |
 | `mouse` | Move, click, double-click, or scroll the pointer on macOS. |
 | `keyboard` | Type text or send keys/shortcuts on macOS. |
-| `local_auth_status` | Return a secret-free `cf-local status --json` summary for diagnosing laptop Cloudflare auth. |
+| `local_auth_status` | Return a bounded, minimized `cf-local status --json --remote` summary for diagnosing laptop Cloudflare auth. Diagnostic only: never auto-run recovery commands. |
 
 Anything command-line-shaped goes through `shell`:
 

@@ -20,7 +20,7 @@ Do not run `machinectl` unless you trust:
 - the model or human sending commands;
 - the Worker deployment configured by `MACHINECTL_URL`.
 
-`shell` can read credentials, execute arbitrary programs, delete files, or exfiltrate data as the local user. `MACHINECTL_ALLOWED_PATHS` does not confine arbitrary shell command content. `screenshot`, `mouse`, and `keyboard` may disclose or operate sensitive logged-in desktop state. Optional pi RPC tools may disclose prompts, transcripts, and local session state.
+`shell` can read credentials, execute arbitrary programs, delete files, or exfiltrate data as the local user. `MACHINECTL_ALLOWED_PATHS` does not confine arbitrary shell command content. `screenshot`, `mouse`, and `keyboard` may disclose or operate sensitive logged-in desktop state. Optional pi RPC tools may disclose prompts, transcripts, and local session state. `local_auth_status` is diagnostic-only: it forwards a bounded allowlisted projection from `cf-local status --json --remote`; callers must never auto-run recovery commands or trigger interactive relinking without explicit operator confirmation.
 
 ## Reporting vulnerabilities
 
