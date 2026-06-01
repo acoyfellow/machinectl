@@ -1,9 +1,9 @@
-// agent-sessions.ts — local coding-agent session control.
+// agent-sessions.ts — opt-in local pi RPC session control.
 //
 // Pi runs through its structured JSONL RPC protocol and remains steerable.
-// OpenCode runs as a captured bounded job. Every session begins within an
-// explicitly allowed project root, is resource bounded, and is torn down when
-// the machinectl daemon exits.
+// These tools publish only when MACHINECTL_ENABLE_PI=1 and allowed project
+// roots are configured; they are an optional extension of the core laptop
+// capability surface, not required for basic machine control.
 
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -14,22 +14,20 @@ import type { RegisteredTool, ToolHandler } from "./protocol.js";
 
 const OUTPUT_CAP = 512 * 1024;
 const FINISHED_RETENTION_MS = 24 * 60 * 60 * 1000;
-const MAX_SESSIONS = boundedInt("MACHINECTL_AGENT_MAX_SESSIONS", 4, 1, 32);
-const SESSION_MAX_RUNTIME_MS = boundedInt("MACHINECTL_AGENT_MAX_RUNTIME_MS", 2 * 60 * 60 * 1000, 60_000, 24 * 60 * 60 * 1000);
-const STOP_GRACE_MS = boundedInt("MACHINECTL_AGENT_STOP_GRACE_MS", 5_000, 100, 60_000);
+const MAX_SESSIONS = boundedInt("MACHINECTL_PI_MAX_SESSIONS", 4, 1, 32);
+const SESSION_MAX_RUNTIME_MS = boundedInt("MACHINECTL_PI_MAX_RUNTIME_MS", 2 * 60 * 60 * 1000, 60_000, 24 * 60 * 60 * 1000);
+const STOP_GRACE_MS = boundedInt("MACHINECTL_PI_STOP_GRACE_MS", 5_000, 100, 60_000);
 const PI_CONTROL_COMMANDS = [
   "get_state", "get_messages", "get_session_stats", "get_last_assistant_text", "get_commands", "get_available_models",
   "set_model", "set_thinking_level", "compact", "set_auto_compaction", "set_auto_retry", "new_session", "switch_session",
   "fork", "clone", "get_fork_messages", "set_session_name", "export_html",
 ] as const;
 
-type AgentKind = "pi" | "opencode";
 type Status = "idle" | "running" | "stopping" | "stopped" | "exited" | "error" | "timed_out";
 type PiControlCommand = typeof PI_CONTROL_COMMANDS[number];
 
 type Session = {
   id: string;
-  agent: AgentKind;
   cwd: string;
   title?: string;
   command: string[];
@@ -63,6 +61,7 @@ const configuredRoots = (process.env.MACHINECTL_ALLOWED_PATHS || "")
   .filter(Boolean)
   .map((root) => pathResolve(root));
 const hasConfiguredPathRoots = configuredRoots.length > 0;
+const PI_TOOLS_ENABLED = process.env.MACHINECTL_ENABLE_PI === "1" || process.env.MACHINECTL_ENABLE_PI === "true";
 let cachedCanonicalRoots: Promise<string[]> | undefined;
 
 function boundedInt(envName: string, fallback: number, min: number, max: number): number {
@@ -99,7 +98,7 @@ function activeSessionCount(): number {
 
 function assertCapacity() {
   if (activeSessionCount() >= MAX_SESSIONS) {
-    throw new Error(`Maximum concurrent agent sessions reached (${MAX_SESSIONS}). Stop an existing session before starting another.`);
+    throw new Error(`Maximum concurrent pi sessions reached (${MAX_SESSIONS}). Stop an existing session before starting another.`);
   }
 }
 
@@ -127,14 +126,13 @@ async function requireCwd(path: string): Promise<string> {
 function mustGetSession(id: string): Session {
   trimFinishedSessions();
   const session = sessions.get(id);
-  if (!session) throw new Error(`Unknown agent session: ${id}`);
+  if (!session) throw new Error(`Unknown pi session: ${id}`);
   return session;
 }
 
 function publicSession(session: Session) {
   return {
     id: session.id,
-    agent: session.agent,
     cwd: session.cwd,
     title: session.title ?? null,
     status: session.status,
@@ -198,7 +196,6 @@ function attachOutput(session: Session) {
     const text = chunk.toString("utf-8");
     session.output = capAppend(session.output, text);
     session.updatedAt = Date.now();
-    if (session.agent !== "pi") return;
     stdoutBuffer += text;
     while (true) {
       const newline = stdoutBuffer.indexOf("\n");
@@ -227,13 +224,13 @@ function attachOutput(session: Session) {
     session.updatedAt = Date.now();
     for (const waiter of session.responseWaiters.values()) {
       clearTimeout(waiter.timer);
-      waiter.reject(new Error(`Agent process exited before replying (code ${code ?? "?"})`));
+      waiter.reject(new Error(`Pi process exited before replying (code ${code ?? "?"})`));
     }
     session.responseWaiters.clear();
   });
 }
 
-function registerProcess(agent: AgentKind, cwd: string, title: string | undefined, command: string[]): Session {
+function registerProcess(cwd: string, title: string | undefined, command: string[]): Session {
   assertCapacity();
   const child = spawn(command[0], command.slice(1), {
     cwd,
@@ -243,9 +240,9 @@ function registerProcess(agent: AgentKind, cwd: string, title: string | undefine
   });
   const session = {} as Session;
   Object.assign(session, {
-    id: randomUUID(), agent, cwd, title, command, process: child, status: agent === "pi" ? "idle" : "running",
+    id: randomUUID(), cwd, title, command, process: child, status: "idle",
     startedAt: Date.now(), updatedAt: Date.now(), output: "", events: [], responseWaiters: new Map(),
-    lifetimeTimer: setTimeout(() => stopSession(session, "timed_out", `Agent session exceeded maximum runtime of ${SESSION_MAX_RUNTIME_MS}ms.`), SESSION_MAX_RUNTIME_MS),
+    lifetimeTimer: setTimeout(() => stopSession(session, "timed_out", `Pi session exceeded maximum runtime of ${SESSION_MAX_RUNTIME_MS}ms.`), SESSION_MAX_RUNTIME_MS),
   });
   sessions.set(session.id, session);
   attachOutput(session);
@@ -253,7 +250,6 @@ function registerProcess(agent: AgentKind, cwd: string, title: string | undefine
 }
 
 function sendPi(session: Session, command: Record<string, unknown>, waitMs = 10_000): Promise<unknown> {
-  if (session.agent !== "pi") throw new Error("This operation is only supported for pi RPC sessions.");
   if (isTerminalStatus(session.status) || session.status === "stopping") throw new Error(`pi session ${session.id} is ${session.status}`);
   const id = randomUUID();
   const framed = { ...command, id };
@@ -291,22 +287,8 @@ async function startPi(args: { cwd: string; prompt?: string; title?: string; mod
   if (args.thinking) command.push("--thinking", args.thinking);
   if (args.session) command.push("--session", await validateSessionReference(args.session, cwd));
   else if (args.continueRecent) command.push("--continue");
-  const session = registerProcess("pi", cwd, args.title, command);
+  const session = registerProcess(cwd, args.title, command);
   if (args.prompt) await sendPi(session, { type: "prompt", message: args.prompt });
-  return session;
-}
-
-async function startOpenCode(args: { cwd: string; prompt: string; title?: string; model?: string; variant?: string; session?: string; continueRecent?: boolean }): Promise<Session> {
-  const cwd = await requireCwd(args.cwd);
-  const command = ["opencode", "run", "--format", "json", "--dir", cwd];
-  if (args.model) command.push("--model", args.model);
-  if (args.variant) command.push("--variant", args.variant);
-  if (args.session) command.push("--session", args.session);
-  else if (args.continueRecent) command.push("--continue");
-  if (args.title) command.push("--title", args.title);
-  command.push(args.prompt);
-  const session = registerProcess("opencode", cwd, args.title, command);
-  session.process.stdin.end();
   return session;
 }
 
@@ -340,7 +322,7 @@ async function findPersistedPiSessions(limit: number): Promise<PersistedPiSessio
 }
 
 async function validatePiControlArgs(command: PiControlCommand, args: Record<string, unknown>, session: Session): Promise<Record<string, unknown>> {
-  if ("type" in args || "id" in args) throw new Error("agent_pi_command args must not contain reserved fields: type, id");
+  if ("type" in args || "id" in args) throw new Error("pi_command args must not contain reserved fields: type, id");
   if (command === "switch_session") {
     if (typeof args.sessionPath !== "string" || !args.sessionPath) throw new Error("switch_session requires args.sessionPath");
     return { ...args, sessionPath: await validateSessionReference(args.sessionPath, session.cwd) };
@@ -358,38 +340,26 @@ function jsonTool<S extends z.ZodTypeAny>(name: string, description: string, sch
 }
 
 export function buildAgentSessionTools(): RegisteredTool[] {
-  if (!hasConfiguredPathRoots) return [];
+  if (!PI_TOOLS_ENABLED || !hasConfiguredPathRoots) return [];
   return [
-    jsonTool("agent_start", `Start a local coding-agent session inside configured paths. Maximum ${MAX_SESSIONS} concurrent sessions; maximum runtime ${SESSION_MAX_RUNTIME_MS}ms. Pi remains steerable through RPC; OpenCode is a captured bounded job.`, {
-      type: "object", properties: { agent: { type: "string", enum: ["pi", "opencode"] }, cwd: { type: "string" }, prompt: { type: "string" }, title: { type: "string" }, model: { type: "string" }, thinking: { type: "string" }, variant: { type: "string" }, continueRecent: { type: "boolean" }, session: { type: "string" } }, required: ["agent", "cwd"],
-    }, z.object({ agent: z.enum(["pi", "opencode"]), cwd: z.string().min(1), prompt: z.string().optional(), title: z.string().optional(), model: z.string().optional(), thinking: z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]).optional(), variant: z.string().optional(), continueRecent: z.boolean().optional(), session: z.string().optional() }).refine((a) => a.agent === "pi" || !!a.prompt, { message: "opencode requires prompt" }), async (args) => {
-      const session = args.agent === "pi" ? await startPi(args) : await startOpenCode({ ...args, prompt: args.prompt! });
-      return json({ session: publicSession(session), note: args.agent === "pi" ? "Use agent_prompt/agent_steer/agent_status to drive this live pi session." : "OpenCode is running as a captured bounded job; poll with agent_status/agent_logs." });
-    }),
-    jsonTool("agent_list", "List active/recent coding-agent sessions; optionally include saved pi sessions whose project cwd is within MACHINECTL_ALLOWED_PATHS.", { type: "object", properties: { includePersistedPi: { type: "boolean" }, limit: { type: "number" } } }, z.object({ includePersistedPi: z.boolean().optional().default(false), limit: z.number().int().min(1).max(50).optional().default(20) }), async ({ includePersistedPi, limit }) => {
+    jsonTool("pi_start", `Start a live local pi RPC session inside configured paths. Maximum ${MAX_SESSIONS} active sessions; maximum runtime ${SESSION_MAX_RUNTIME_MS}ms.`, {
+      type: "object", properties: { cwd: { type: "string" }, title: { type: "string" }, model: { type: "string" }, thinking: { type: "string" }, continueRecent: { type: "boolean" }, session: { type: "string" } }, required: ["cwd"],
+    }, z.object({ cwd: z.string().min(1), title: z.string().optional(), model: z.string().optional(), thinking: z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]).optional(), continueRecent: z.boolean().optional(), session: z.string().optional() }), async (args) => json({ session: publicSession(await startPi(args)) })),
+    jsonTool("pi_list", "List active/recent pi sessions; optionally include persisted pi sessions whose project cwd is permitted.", { type: "object", properties: { includePersisted: { type: "boolean" }, limit: { type: "number" } } }, z.object({ includePersisted: z.boolean().optional().default(false), limit: z.number().int().min(1).max(50).optional().default(20) }), async ({ includePersisted, limit }) => {
       trimFinishedSessions();
-      return json({ sessions: [...sessions.values()].map(publicSession).slice(-limit), ...(includePersistedPi ? { persistedPi: await findPersistedPiSessions(limit) } : {}), limits: { maxConcurrentSessions: MAX_SESSIONS, maxRuntimeMs: SESSION_MAX_RUNTIME_MS } });
+      return json({ sessions: [...sessions.values()].map(publicSession).slice(-limit), ...(includePersisted ? { persisted: await findPersistedPiSessions(limit) } : {}), limits: { maxConcurrentSessions: MAX_SESSIONS, maxRuntimeMs: SESSION_MAX_RUNTIME_MS } });
     }),
-    jsonTool("agent_status", "Get status and recent structured events for a local coding-agent session.", { type: "object", properties: { id: { type: "string" }, eventLimit: { type: "number" } }, required: ["id"] }, z.object({ id: z.string(), eventLimit: z.number().int().min(0).max(100).optional().default(20) }), async ({ id, eventLimit }) => json({ session: publicSession(mustGetSession(id)), recentEvents: mustGetSession(id).events.slice(-eventLimit) })),
-    jsonTool("agent_logs", "Read captured stdout/stderr from a local coding-agent session.", { type: "object", properties: { id: { type: "string" }, tailChars: { type: "number" } }, required: ["id"] }, z.object({ id: z.string(), tailChars: z.number().int().min(1).max(OUTPUT_CAP).optional().default(20000) }), async ({ id, tailChars }) => mustGetSession(id).output.slice(-tailChars) || "(no output yet)"),
-    jsonTool("agent_prompt", "Send a prompt to a live pi RPC session. Use streamingBehavior=steer/followUp if pi is currently running.", { type: "object", properties: { id: { type: "string" }, message: { type: "string" }, streamingBehavior: { type: "string", enum: ["steer", "followUp"] } }, required: ["id", "message"] }, z.object({ id: z.string(), message: z.string().min(1), streamingBehavior: z.enum(["steer", "followUp"]).optional() }), async ({ id, message, streamingBehavior }) => json(await sendPi(mustGetSession(id), { type: "prompt", message, ...(streamingBehavior ? { streamingBehavior } : {}) }))),
-    jsonTool("agent_steer", "Queue steering guidance to a live pi RPC session while it is working.", { type: "object", properties: { id: { type: "string" }, message: { type: "string" } }, required: ["id", "message"] }, z.object({ id: z.string(), message: z.string().min(1) }), async ({ id, message }) => json(await sendPi(mustGetSession(id), { type: "steer", message }))),
-    jsonTool("agent_follow_up", "Queue follow-up work for a live pi RPC session.", { type: "object", properties: { id: { type: "string" }, message: { type: "string" } }, required: ["id", "message"] }, z.object({ id: z.string(), message: z.string().min(1) }), async ({ id, message }) => json(await sendPi(mustGetSession(id), { type: "follow_up", message }))),
-    jsonTool("agent_pi_command", "Issue an allow-listed pi RPC control command. Session paths and export output paths remain restricted to configured roots.", { type: "object", properties: { id: { type: "string" }, command: { type: "string" }, args: { type: "object" } }, required: ["id", "command"] }, z.object({ id: z.string(), command: z.enum(PI_CONTROL_COMMANDS), args: z.record(z.unknown()).optional().default({}) }), async ({ id, command, args }) => {
+    jsonTool("pi_status", "Get status and recent structured events for a local pi RPC session.", { type: "object", properties: { id: { type: "string" }, eventLimit: { type: "number" } }, required: ["id"] }, z.object({ id: z.string(), eventLimit: z.number().int().min(0).max(100).optional().default(20) }), async ({ id, eventLimit }) => { const session = mustGetSession(id); return json({ session: publicSession(session), recentEvents: session.events.slice(-eventLimit) }); }),
+    jsonTool("pi_logs", "Read captured stdout/stderr from a local pi RPC session.", { type: "object", properties: { id: { type: "string" }, tailChars: { type: "number" } }, required: ["id"] }, z.object({ id: z.string(), tailChars: z.number().int().min(1).max(OUTPUT_CAP).optional().default(20000) }), async ({ id, tailChars }) => mustGetSession(id).output.slice(-tailChars) || "(no output yet)"),
+    jsonTool("pi_prompt", "Send a prompt to a live pi RPC session. Use streamingBehavior=steer/followUp if pi is currently running.", { type: "object", properties: { id: { type: "string" }, message: { type: "string" }, streamingBehavior: { type: "string", enum: ["steer", "followUp"] } }, required: ["id", "message"] }, z.object({ id: z.string(), message: z.string().min(1), streamingBehavior: z.enum(["steer", "followUp"]).optional() }), async ({ id, message, streamingBehavior }) => json(await sendPi(mustGetSession(id), { type: "prompt", message, ...(streamingBehavior ? { streamingBehavior } : {}) }))),
+    jsonTool("pi_steer", "Queue steering guidance to a live pi RPC session while it is working.", { type: "object", properties: { id: { type: "string" }, message: { type: "string" } }, required: ["id", "message"] }, z.object({ id: z.string(), message: z.string().min(1) }), async ({ id, message }) => json(await sendPi(mustGetSession(id), { type: "steer", message }))),
+    jsonTool("pi_follow_up", "Queue follow-up work for a live pi RPC session.", { type: "object", properties: { id: { type: "string" }, message: { type: "string" } }, required: ["id", "message"] }, z.object({ id: z.string(), message: z.string().min(1) }), async ({ id, message }) => json(await sendPi(mustGetSession(id), { type: "follow_up", message }))),
+    jsonTool("pi_command", "Issue an allow-listed pi RPC control command. Session paths and export output paths remain restricted to configured roots.", { type: "object", properties: { id: { type: "string" }, command: { type: "string" }, args: { type: "object" } }, required: ["id", "command"] }, z.object({ id: z.string(), command: z.enum(PI_CONTROL_COMMANDS), args: z.record(z.unknown()).optional().default({}) }), async ({ id, command, args }) => {
       const session = mustGetSession(id);
       const safeArgs = await validatePiControlArgs(command, args, session);
       return json(await sendPi(session, { ...safeArgs, type: command }, command === "compact" ? 120_000 : 10_000));
     }),
-    jsonTool("agent_abort", "Abort current pi work or terminate an OpenCode job without removing its logs.", { type: "object", properties: { id: { type: "string" } }, required: ["id"] }, z.object({ id: z.string() }), async ({ id }) => {
-      const session = mustGetSession(id);
-      if (session.agent === "pi" && !isTerminalStatus(session.status)) await sendPi(session, { type: "abort" }).catch(() => undefined);
-      else stopSession(session, "stopped", "Agent job aborted by remote caller.");
-      return json({ session: publicSession(session) });
-    }),
-    jsonTool("agent_stop", "Stop a local coding-agent process tree and retain captured logs for later inspection.", { type: "object", properties: { id: { type: "string" } }, required: ["id"] }, z.object({ id: z.string() }), async ({ id }) => {
-      const session = mustGetSession(id);
-      stopSession(session, "stopped", "Agent session stopped by remote caller.");
-      return json({ session: publicSession(session) });
-    }),
+    jsonTool("pi_abort", "Abort current work in a local pi RPC session.", { type: "object", properties: { id: { type: "string" } }, required: ["id"] }, z.object({ id: z.string() }), async ({ id }) => json(await sendPi(mustGetSession(id), { type: "abort" }).catch(() => ({ aborted: false })))),
+    jsonTool("pi_stop", "Stop a local pi RPC session and retain captured logs for inspection.", { type: "object", properties: { id: { type: "string" } }, required: ["id"] }, z.object({ id: z.string() }), async ({ id }) => { const session = mustGetSession(id); stopSession(session, "stopped", "Pi session stopped by remote caller."); return json({ session: publicSession(session) }); }),
   ];
 }

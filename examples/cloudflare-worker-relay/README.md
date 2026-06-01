@@ -1,6 +1,6 @@
 # Cloudflare Worker relay example
 
-Reference Worker endpoint for the `machinectl` laptop daemon. It provides:
+Reference Worker endpoint for the `machinectl` laptop daemon. It relays the core `shell`, `screenshot`, `mouse`, and `keyboard` tools plus optional `pi_*` RPC tools when enabled on the daemon. It provides:
 
 - Cloudflare Access JWT verification in Worker code;
 - a per-user `MachineHost` Durable Object;
@@ -105,8 +105,9 @@ Receipts are written after execution. A receipt storage failure is logged but do
 
 ### Security considerations
 
-- The daemon exposes `exec_command`, which is shell-equivalent by design.
-- The daemon's current `git` tool is also shell-equivalent; do not treat it as constrained execution.
+- The daemon exposes `shell`, which is terminal-equivalent by design.
+- `screenshot`, `mouse`, and `keyboard` can disclose or operate logged-in desktop state.
+- Optional `pi_*` tools can disclose or control local pi sessions.
 - Anyone authorized by your Access policy can invoke tools on the connected laptop.
 - A new daemon connection for the same user replaces the previous connection.
 - Do not transmit secrets unless your end-to-end logging and retention policy is appropriate for them.

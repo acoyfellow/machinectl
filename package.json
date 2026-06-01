@@ -2,7 +2,7 @@
   "name": "machinectl",
   "version": "0.4.0",
   "type": "module",
-  "description": "Access-gated, centrally audited MCP bridge for operating your laptop and local coding agents over an outbound WebSocket.",
+  "description": "Expose shell, screen, mouse, keyboard, and optional pi RPC control through an authenticated MCP relay.",
   "license": "MIT",
   "repository": {
     "type": "git",

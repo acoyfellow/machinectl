@@ -65,14 +65,14 @@ function textResult(text: string, isError = false) {
 }
 
 function summarizeArgs(tool: string, args: Record<string, unknown>) {
-  const allowedKeys = tool === "read_file" || tool === "list_directory" || tool === "open"
-    ? ["path", "target", "recursive", "maxDepth"]
-    : tool === "agent_start"
-      ? ["agent", "cwd", "title", "model", "thinking", "continueRecent"]
-      : tool === "agent_status" || tool === "agent_stop" || tool === "agent_abort" || tool === "agent_pi_command"
-        ? ["id", "command"]
-        : tool === "processes"
-          ? ["sortBy", "limit"]
+  const allowedKeys = tool === "shell"
+    ? ["cwd", "timeoutMs"]
+    : tool === "mouse"
+      ? ["action", "x", "y", "delta"]
+      : tool === "pi_start"
+        ? ["cwd", "model", "thinking", "continueRecent"]
+        : tool === "pi_status" || tool === "pi_stop" || tool === "pi_abort" || tool === "pi_command"
+          ? ["id", "command"]
           : [];
   const summary: Record<string, unknown> = {};
   for (const key of allowedKeys) {

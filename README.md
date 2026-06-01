@@ -1,39 +1,85 @@
 # machinectl
 
-Laptop-side daemon for exposing local tools to an MCP client through an authenticated Worker relay.
+Run authenticated MCP tools on your laptop through an outbound connection to a Cloudflare Worker relay.
 
-`machinectl` does not open an inbound server or create a tunnel. It connects outbound to a compatible Worker endpoint, publishes its tool catalog, executes relayed tool calls locally, and sends results back over the same WebSocket.
+> **Security:** authorized clients can execute shell commands as your local user and operate your visible desktop through mouse and keyboard input. Only deploy this if you intend to grant terminal-and-desktop-equivalent access.
 
-This repository includes the laptop daemon and a deployable reference Cloudflare Worker relay under [`examples/cloudflare-worker-relay`](./examples/cloudflare-worker-relay/). The relay's authentication and audit policy are part of your security boundary.
+## Core tools
 
-## Architecture
+| Tool | What it does |
+|---|---|
+| `shell` | Run shell commands as your local user. Use it for files, git, processes, clipboard, notifications, opening apps/URLs, scripts, and any installed coding tool. |
+| `screenshot` | Capture the current screen as a PNG image. |
+| `mouse` | Move, click, double-click, or scroll the pointer on macOS. |
+| `keyboard` | Type text or send keys/shortcuts on macOS. |
+
+Anything command-line-shaped goes through `shell`:
+
+```bash
+cat package.json
+git status
+npm test
+pbpaste
+printf 'done' | pbcopy
+osascript -e 'display notification "finished" with title "machinectl"'
+open https://example.com
+tmux new-session -d -s task 'npm test'
+tmux capture-pane -pt task
+```
+
+## Optional pi integration
+
+If you use [pi](https://github.com/badlogic/pi-mono), machinectl can also expose structured live control of local `pi --mode rpc` sessions:
+
+```bash
+MACHINECTL_ENABLE_PI=1 \
+MACHINECTL_ALLOWED_PATHS="$HOME/projects" \
+MACHINECTL_URL=https://machinectl.example.com \
+  npm start
+```
+
+This adds:
+
+```text
+pi_start      pi_list       pi_status     pi_logs
+pi_prompt     pi_steer      pi_follow_up  pi_command
+pi_abort      pi_stop
+```
+
+Pi support is opt-in and local: machinectl starts the pi process on your laptop and retains its RPC handles while the daemon is running. It is not required for shell/screen/mouse/keyboard control. Other coding tools can be run through `shell`.
+
+## How it works
 
 ```text
 MCP client
-   │
-   │ POST /machinectl/mcp
-   ▼
-Authenticated Worker endpoint
-   │
-   │ outbound WebSocket connection initiated by laptop
-   ▼
+    │
+    │ authenticated request
+    ▼
+Cloudflare Worker relay
+behind Cloudflare Access
+    │
+    │ outbound WebSocket initiated by laptop
+    ▼
 machinectl daemon
-   │
-   ├── shell / git / file / desktop tools
-   ├── live pi RPC sessions
-   └── captured OpenCode jobs
+    │
+    ├── shell / screenshot / mouse / keyboard
+    └── optional live pi RPC sessions
 ```
 
-When the daemon disconnects, no laptop tools are callable through MCP `tools/list`.
+The daemon does not open an inbound server or create a public tunnel. When it disconnects, its tools are no longer callable through the MCP endpoint.
 
 ## Requirements
 
 - Node.js 20 or later
-- A compatible Worker-side `MachineHost` endpoint, such as the included [`examples/cloudflare-worker-relay`](./examples/cloudflare-worker-relay/) implementation
-- `cloudflared` if the endpoint uses Cloudflare Access authentication
-- macOS or Linux for platform-dependent desktop tools
+- A Cloudflare account and hostname you control
+- Cloudflare Access configured for that hostname
+- `cloudflared` installed on the laptop
+- macOS for the complete desktop-control surface; shell and screenshots have limited Linux support
+- Optional: `pi` on `PATH` when enabling pi RPC integration
 
-## Install
+## Quick start
+
+### 1. Install
 
 ```bash
 git clone https://github.com/acoyfellow/machinectl
@@ -42,184 +88,221 @@ npm install
 npm run build
 ```
 
-## Deploy a relay
+### 2. Deploy the relay
 
-A deployable Cloudflare Worker relay example is included:
+A reference Cloudflare Worker relay is included. From the cloned `machinectl` directory:
 
 ```bash
 cd examples/cloudflare-worker-relay
 npm install
 cp wrangler.jsonc.example wrangler.jsonc
-# Edit wrangler.jsonc with your hostname and Cloudflare Access app values.
+```
+
+Edit `wrangler.jsonc` with:
+
+- your relay hostname, for example `machinectl.example.com`;
+- your Cloudflare Access application audience tag;
+- your Cloudflare Access team issuer;
+- an optional KV namespace for content-minimizing audit receipts.
+
+Then deploy:
+
+```bash
 npm run typecheck
 npm run deploy
 ```
 
-See [`examples/cloudflare-worker-relay/README.md`](./examples/cloudflare-worker-relay/README.md) for Access configuration, endpoint behavior, limits, and receipt handling.
+See [`examples/cloudflare-worker-relay/README.md`](./examples/cloudflare-worker-relay/README.md) for relay setup details.
 
-## Configure the daemon
+### 3. Protect it with Cloudflare Access
 
-Set the URL of your deployed trusted Worker endpoint:
+Create a Cloudflare Access self-hosted application protecting your relay hostname. Start with an allow policy for only your identity.
+
+Before connecting a laptop, verify the MCP endpoint is gated:
+
+```bash
+curl -I https://machinectl.example.com/machinectl/mcp
+```
+
+Expected result is a redirect to your Cloudflare Access login. Do not continue if the endpoint is publicly reachable.
+
+### 4. Run the laptop daemon
+
+Return to the cloned `machinectl` directory if necessary, then run:
 
 ```bash
 export MACHINECTL_URL=https://machinectl.example.com
-```
-
-If the endpoint uses Cloudflare Access, install `cloudflared` and authenticate once:
-
-```bash
-brew install cloudflared
 cloudflared access login "$MACHINECTL_URL"
+
+npm start
 ```
 
-At startup and reconnect, the daemon obtains the cached token with `cloudflared access token --app="$MACHINECTL_URL"` and sends it in the WebSocket upgrade request. For testing or non-interactive launch environments, set `MACHINECTL_ACCESS_TOKEN` explicitly.
-
-## Run
-
-Choose which directories dedicated file tools and local coding-agent sessions may operate within:
-
-```bash
-MACHINECTL_URL=https://machinectl.example.com \
-MACHINECTL_ALLOWED_PATHS=/Users/you/projects,/Users/you/work \
-  node dist/index.js
-```
-
-Example output:
+Expected output:
 
 ```text
-[machinectl] machinectl daemon — machine: "your-macbook"
-[machinectl] worker: https://machinectl.example.com
-[machinectl] tools registered: exec_command, git, agent_start, agent_list, agent_status, agent_logs, agent_prompt, agent_steer, agent_follow_up, agent_pi_command, agent_abort, agent_stop, read_file, write_file, list_directory, screenshot, processes, clipboard, notify, open
-[machinectl] connecting to wss://machinectl.example.com/machinectl/connect as "your-macbook"
+[machinectl] connecting to wss://machinectl.example.com/machinectl/connect as "your-machine"
 [machinectl] connected; publishing tool catalog
 ```
 
-If `MACHINECTL_ALLOWED_PATHS` is not set, `read_file`, `write_file`, `list_directory`, and `agent_*` are not published. `open` remains available for URLs but rejects local-file targets unless their paths are allowed.
+If you plan to pass explicit working directories to `shell`, configure allowed roots:
 
-`MACHINECTL_ALLOWED_PATHS` is not a shell sandbox. `exec_command` can access anything available to the local user. In the current release, `git` is also shell-interpreted and must be treated as shell-equivalent.
+```bash
+MACHINECTL_URL=https://machinectl.example.com \
+MACHINECTL_ALLOWED_PATHS="$HOME/projects" \
+  npm start
+```
+
+`MACHINECTL_ALLOWED_PATHS` limits explicit `cwd` values passed to `shell` and the directories usable by optional pi sessions. It does **not** sandbox shell command contents.
+
+### 5. Connect an MCP client
+
+Configure your MCP client to use:
+
+```text
+https://machinectl.example.com/machinectl/mcp
+```
+
+The client must authenticate through your Cloudflare Access policy.
+
+Start with:
+
+```text
+screenshot({})
+```
+
+or:
+
+```text
+shell({ command: "pwd" })
+```
+
+## Tool reference
+
+### `shell`
+
+```ts
+shell({
+  command: "git status --short",
+  cwd: "/Users/me/projects/app", // optional; must be within MACHINECTL_ALLOWED_PATHS
+  timeoutMs: 60000                // optional
+})
+```
+
+Runs through `bash -lc`. Output is capped. On timeout or daemon shutdown, machinectl terminates the shell process group.
+
+### `screenshot`
+
+```ts
+screenshot({})
+```
+
+Returns a PNG data URL (subject to a configurable size limit) and deletes its temporary local capture after reading it. Screen contents may be sensitive.
+
+### `mouse`
+
+```ts
+mouse({ action: "move", x: 400, y: 300 })
+mouse({ action: "click", x: 400, y: 300 })
+mouse({ action: "double_click", x: 400, y: 300 })
+mouse({ action: "scroll", delta: -4 })
+```
+
+Implemented on macOS using System Events and requires user-approved Accessibility permission.
+
+### `keyboard`
+
+```ts
+keyboard({ action: "type", text: "hello" })
+keyboard({ action: "key", key: "return" })
+keyboard({ action: "key", key: "c", modifiers: ["command"] })
+```
+
+Implemented on macOS using System Events and requires user-approved Accessibility permission. Named keys include `return`, `tab`, `escape`, `space`, `delete`, `up`, `down`, `left`, and `right`.
+
+## Pi RPC tool reference
+
+When `MACHINECTL_ENABLE_PI=1` is configured together with `MACHINECTL_ALLOWED_PATHS`, machinectl publishes the following optional tools:
+
+| Tool | Description |
+|---|---|
+| `pi_start` | Start a live local `pi --mode rpc` session in an allowed directory. |
+| `pi_list` | List tracked sessions and optionally permitted persisted pi sessions. |
+| `pi_status` | Read structured pi events and current status. |
+| `pi_logs` | Read captured process output. |
+| `pi_prompt` | Send a prompt to pi. |
+| `pi_steer` | Steer an in-progress pi run. |
+| `pi_follow_up` | Queue follow-up work. |
+| `pi_command` | Run allow-listed pi RPC session/model/control commands. |
+| `pi_abort` | Abort current pi work. |
+| `pi_stop` | Stop a tracked pi process. |
+
+Example:
+
+```text
+pi_start({ cwd: "/Users/me/projects/app" })
+pi_prompt({ id: "<session-id>", message: "inspect the failing tests" })
+pi_status({ id: "<session-id>" })
+pi_steer({ id: "<session-id>", message: "do not modify migrations" })
+pi_command({ id: "<session-id>", command: "get_last_assistant_text" })
+pi_stop({ id: "<session-id>" })
+```
+
+Pi session handles and recent events are held in daemon memory. If the daemon restarts, active handles are lost; pi-persisted session files may still be reopened later.
+
+## Code-mode clients
+
+`machinectl` exposes computer capabilities and an optional pi RPC bridge; it does not itself implement code mode.
+
+Clients that support code mode can orchestrate multiple machinectl calls inside a single execution cell, reducing repeated model/tool round trips:
+
+```js
+const status = await tools.shell({ command: "git status --short", cwd: "/Users/me/projects/app" });
+const tests = await tools.shell({ command: "npm test", cwd: "/Users/me/projects/app" });
+text(status + "\n" + tests);
+```
+
+Code-mode policy and JavaScript sandboxing belong to the MCP client or agent harness, not this laptop daemon.
 
 ## Configuration
 
 | Variable | Default | Description |
 |---|---:|---|
-| `MACHINECTL_URL` | required | Trusted compatible Worker endpoint base URL. |
-| `MACHINECTL_NAME` | `os.hostname()` | Machine name published to the Worker. |
-| `MACHINECTL_ALLOWED_PATHS` | empty | Comma-separated directory roots for dedicated file tools, local-file `open` targets, optional `cwd` validation, and `agent_*` sessions. |
-| `MACHINECTL_ACCESS_TOKEN` | unset | Explicit authentication token override instead of retrieving a Cloudflare Access token with `cloudflared`. |
-| `MACHINECTL_EXEC_TIMEOUT` | `60000` | Timeout in milliseconds for `exec_command` and `git`. Minimum 1000 ms; no maximum is currently enforced. |
-| `MACHINECTL_AGENT_MAX_SESSIONS` | `4` | Maximum concurrently active pi/OpenCode sessions. Range: 1–32. |
-| `MACHINECTL_AGENT_MAX_RUNTIME_MS` | `7200000` | Maximum local coding-agent session runtime. Range: 1 minute–24 hours. |
-| `MACHINECTL_AGENT_STOP_GRACE_MS` | `5000` | Grace period between `SIGTERM` and `SIGKILL` for agent process groups. |
+| `MACHINECTL_URL` | required | URL of your trusted Worker relay. |
+| `MACHINECTL_NAME` | system hostname | Name published for the connected machine. |
+| `MACHINECTL_ACCESS_TOKEN` | unset | Explicit token override instead of retrieving a Cloudflare Access token via `cloudflared`. |
+| `MACHINECTL_ALLOWED_PATHS` | empty | Allowed explicit `cwd` roots for `shell` and permitted directories for optional pi sessions. |
+| `MACHINECTL_SHELL_TIMEOUT` | `60000` | Default `shell` timeout in milliseconds. |
+| `MACHINECTL_SCREENSHOT_MAX_BYTES` | `8388608` | Maximum PNG screenshot bytes returned by `screenshot`. |
+| `MACHINECTL_ENABLE_PI` | unset | Set to `1` or `true` to publish optional pi RPC tools. Requires allowed paths. |
+| `MACHINECTL_PI_MAX_SESSIONS` | `4` | Maximum concurrent tracked pi RPC sessions. |
+| `MACHINECTL_PI_MAX_RUNTIME_MS` | `7200000` | Maximum lifetime for a tracked pi RPC session. |
+| `MACHINECTL_PI_STOP_GRACE_MS` | `5000` | Grace period before force-killing a stopped pi process group. |
 
-## Tools
+## Relay and audit boundary
 
-### Machine tools
+The Worker relay is part of the security boundary. It authenticates callers and laptop connections, routes calls, limits requests/results, and applies its audit-retention policy.
 
-| Tool | Description | Path behavior |
-|---|---|---|
-| `exec_command` | Execute a shell command and return stdout/stderr/exit status. | Optional `cwd` is checked; shell command contents are unrestricted. |
-| `git` | Execute a shell-interpreted command prefixed with `git` after validating the first subcommand token. | Optional `cwd` is checked; currently shell-equivalent. |
-| `read_file` | Read a UTF-8 file, truncated above 256 KB. | Requires allowed path. |
-| `write_file` | Write UTF-8 content, creating parent directories. | Requires allowed path. |
-| `list_directory` | List a directory; optional recursive traversal with bounded depth. | Requires allowed path. |
-| `screenshot` | Capture a PNG screenshot and return base64 data. | No path restriction. |
-| `processes` | List top processes by CPU or memory. | No path restriction. |
-| `clipboard` | Read or write the system clipboard. | No path restriction. |
-| `notify` | Send a system notification. | No path restriction. |
-| `open` | Open a URL or local file in the default handler. | URLs unrestricted; file targets checked at call time. |
+The included reference relay verifies Cloudflare Access JWTs, applies basic request/result/concurrency bounds, and optionally stores content-minimizing post-call receipts. It does not store tool result content in receipts.
 
-### Coding-agent tools
-
-`agent_*` tools are published only when `MACHINECTL_ALLOWED_PATHS` is configured.
-
-| Tool | Description |
-|---|---|
-| `agent_start` | Start a local pi RPC session or captured OpenCode job in an allowed working directory. |
-| `agent_list` | List active/recent daemon sessions and optionally discover permitted persisted pi sessions. |
-| `agent_status` | Read status and recent structured pi events. |
-| `agent_logs` | Read captured stdout/stderr. |
-| `agent_prompt` | Send a prompt to a live pi session. |
-| `agent_steer` | Queue steering guidance for a running pi session. |
-| `agent_follow_up` | Queue follow-up work for a pi session. |
-| `agent_pi_command` | Execute an allow-listed pi RPC control command. |
-| `agent_abort` | Abort current pi work or terminate an OpenCode job. |
-| `agent_stop` | Stop the tracked coding-agent process tree. |
-
-## Pi sessions
-
-Pi runs through its RPC mode:
-
-```text
-pi --mode rpc
-```
-
-Example MCP tool sequence:
-
-```text
-agent_start({
-  agent: "pi",
-  cwd: "/Users/me/projects/my-app",
-  prompt: "inspect the failing tests and explain the likely fix"
-})
-
-agent_status({ id: "<returned session id>" })
-agent_steer({ id: "<returned session id>", message: "do not modify migrations" })
-agent_pi_command({ id: "<returned session id>", command: "get_last_assistant_text" })
-agent_stop({ id: "<returned session id>" })
-```
-
-Allowed pi control commands include state/messages/stats queries, model and thinking changes, compaction, session naming, fork/clone, session switching, and HTML export. Explicit session paths, session switching paths, and explicit export output paths are validated against configured allowed roots.
-
-Pi session process handles and recent events are held in daemon memory. If the daemon restarts, active control handles are lost; pi-persisted session files may still be reopened later.
-
-## OpenCode jobs
-
-OpenCode runs as a captured bounded process:
-
-```text
-opencode run --format json --dir <allowed-directory> <prompt>
-```
-
-Use `agent_status`, `agent_logs`, and `agent_stop` to monitor or terminate it. Live prompt and steering controls are currently implemented only for pi.
-
-## Authentication and audit boundary
-
-The Worker endpoint is part of the security boundary. The included reference relay is a starting implementation; review its policy before use. A relay is responsible for:
-
-- authenticating MCP callers and laptop WebSocket connections;
-- routing a caller to the intended machine;
-- applying rate, size, and concurrency limits;
-- deciding whether and how tool calls are audited;
-- retaining, redacting, or discarding sensitive request/result material.
-
-A Worker implementation may retain tool arguments or output excerpts in its audit store. Review that behavior before transmitting secrets, reading sensitive files, copying credentials, or returning secret-bearing command output. The included reference relay stores content-minimizing post-call receipts when its optional KV binding is configured; it does not store tool result content.
+Review relay policy before sending credentials, capturing sensitive screens, typing into logged-in applications, or transmitting pi prompt/transcript content.
 
 ## Security model
 
-`exec_command` is shell-equivalent and enabled by default. The current `git` tool must also be treated as shell-equivalent because its arguments are interpreted by a shell after a first-token check.
+An authenticated caller with access to your relay can operate your laptop:
 
-Do not run `machinectl` unless you trust:
+- `shell` can read credentials, modify files, run programs, start coding agents, or exfiltrate data available to your user;
+- `screenshot` can reveal sensitive on-screen information;
+- `mouse` and `keyboard` can interact with applications already open or authenticated on the desktop;
+- optional pi RPC tools can read and control pi session content on your laptop.
 
-- the configured Worker endpoint;
-- its authentication and audit policy;
-- the MCP clients and users authorized to call it;
-- the agent or model issuing commands.
+Use `machinectl` only when you trust:
 
-Path restrictions apply to dedicated path-based operations and coding-agent session locations. They do not restrict arbitrary shell command contents.
+- the Cloudflare Access policy protecting the relay;
+- the clients and users allowed by that policy;
+- the agent or model issuing actions;
+- the relay implementation and its audit policy.
 
-See [SECURITY.md](./SECURITY.md) for vulnerability reporting and additional security guidance.
-
-## Worker protocol
-
-A compatible Worker endpoint must support the protocol in [`src/protocol.ts`](./src/protocol.ts):
-
-- laptop connects to `GET /machinectl/connect` using WebSocket upgrade;
-- laptop sends a `hello` frame containing machine name and tool catalog;
-- Worker sends `call` frames containing tool name and arguments;
-- laptop responds with correlated `result` frames;
-- Worker exposes an MCP endpoint, typically `POST /machinectl/mcp`, to its authenticated clients.
-
-A deployable reference implementation is provided in [`examples/cloudflare-worker-relay`](./examples/cloudflare-worker-relay/).
+See [SECURITY.md](./SECURITY.md).
 
 ## Development
 

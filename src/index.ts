@@ -32,7 +32,7 @@
 import WebSocket from "ws";
 import { execSync } from "node:child_process";
 import { hostname } from "node:os";
-import { buildToolRegistry, FS_TOOLS_AVAILABLE } from "./tools.js";
+import { buildToolRegistry, shutdownTools } from "./tools.js";
 import { shutdownAgentSessions } from "./agent-sessions.js";
 import type { LaptopFrame, PublishedTool, RegisteredTool, WorkerFrame } from "./protocol.js";
 
@@ -250,20 +250,21 @@ function banner() {
   log(`machinectl daemon — machine: "${MACHINE_NAME}"`);
   log(`worker: ${URL_BASE}`);
   log(`tools registered: ${REGISTRY.map((t) => t.name).join(", ")}`);
-  if (!FS_TOOLS_AVAILABLE) {
-    log("[!] filesystem tools and agent session control (agent_*) are DISABLED");
-    log("[!] set MACHINECTL_ALLOWED_PATHS=/abs/path1,/abs/path2 and restart to enable");
+  if ((process.env.MACHINECTL_ENABLE_PI === "1" || process.env.MACHINECTL_ENABLE_PI === "true") && !process.env.MACHINECTL_ALLOWED_PATHS) {
+    log("[!] pi RPC tools require MACHINECTL_ALLOWED_PATHS and were not enabled");
   }
 }
 
 process.on("SIGINT", () => {
   log("received SIGINT");
   shuttingDown = true;
+  shutdownTools();
   shutdownAgentSessions("machinectl received SIGINT");
 });
 process.on("SIGTERM", () => {
   log("received SIGTERM");
   shuttingDown = true;
+  shutdownTools();
   shutdownAgentSessions("machinectl received SIGTERM");
 });
 
