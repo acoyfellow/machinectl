@@ -22,6 +22,8 @@ Do not run `machinectl` unless you trust:
 
 `shell` can read credentials, execute arbitrary programs, delete files, or exfiltrate data as the local user. `MACHINECTL_ALLOWED_PATHS` does not confine arbitrary shell command content. `screenshot`, `mouse`, and `keyboard` may disclose or operate sensitive logged-in desktop state. Optional pi RPC tools may disclose prompts, transcripts, and local session state. `local_auth_status` is diagnostic-only: it forwards a bounded allowlisted projection from `cf-local status --json --remote`; callers must never auto-run recovery commands or trigger interactive relinking without explicit operator confirmation.
 
+Do not use an uncontained host relay for workloads whose data-handling policy requires container isolation, credential-file blocking, or a read-only working directory. In those environments, run the approved contained workflow instead of treating machinectl's operator warning as a compensating control.
+
 ## Reporting vulnerabilities
 
 Please report vulnerabilities privately through GitHub's **Report a vulnerability** / Security Advisories feature for this repository.
