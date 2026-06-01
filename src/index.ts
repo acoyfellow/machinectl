@@ -43,14 +43,15 @@ const RECONNECT_MIN_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
 const STABLE_CONNECTION_MS = 60_000;
 const PING_INTERVAL_MS = 30_000;
+const LOG_TIMESTAMP = process.env.MACHINECTL_LOG_TIMESTAMP === "1";
 
 function log(...args: unknown[]) {
   // Prefix every line so it's obvious in mixed logs.
-  console.log("[machinectl]", ...args);
+  console.log("[machinectl]", ...(LOG_TIMESTAMP ? [new Date().toISOString()] : []), ...args);
 }
 
 function logErr(...args: unknown[]) {
-  console.error("[machinectl]", ...args);
+  console.error("[machinectl]", ...(LOG_TIMESTAMP ? [new Date().toISOString()] : []), ...args);
 }
 
 // ─── access token retrieval ──────────────────────────────────────────────
@@ -169,12 +170,12 @@ async function connectOnce(): Promise<void> {
       }, STABLE_CONNECTION_MS);
     });
 
-    // Keep-alive pings from the daemon side. The Worker also pings;
-    // either direction is fine. Hibernation-friendly: pongs come back
-    // as plain ws control frames, which we don't need to handle here.
+    // Keep the Durable Object WebSocket awake using application frames.
+    // Native WebSocket control-frame ping/pong is not reliably surfaced
+    // through a hibernating Workers WebSocket attachment.
     const pingTimer = setInterval(() => {
-      if (ws.readyState !== ws.OPEN) return;
-      try { ws.ping(); } catch {}
+      if (ws.readyState !== WebSocket.OPEN) return;
+      try { ws.send(JSON.stringify({ type: "ping" })); } catch {}
     }, PING_INTERVAL_MS);
 
     ws.on("message", async (data) => {
