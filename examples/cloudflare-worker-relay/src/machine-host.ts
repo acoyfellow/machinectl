@@ -10,6 +10,7 @@ type LaptopFrame =
   | { type: "hello"; machineName: string; tools: PublishedTool[] }
   | { type: "result"; id: string; ok: true; content: string }
   | { type: "result"; id: string; ok: false; error: string }
+  | { type: "ping" }
   | { type: "pong" };
 
 type ToolResult = { ok: true; content: string } | { ok: false; error: string };
@@ -148,6 +149,10 @@ export class MachineHost extends DurableObject<HostEnv> {
         return;
       }
       await this.ctx.storage.put({ [MACHINE_NAME]: frame.machineName, [TOOLS]: frame.tools });
+      return;
+    }
+    if (frame.type === "ping") {
+      socket.send(JSON.stringify({ type: "pong" }));
       return;
     }
     if (frame.type === "result") {

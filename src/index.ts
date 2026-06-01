@@ -42,8 +42,9 @@ const MACHINE_NAME = process.env.MACHINECTL_NAME ?? hostname();
 const RECONNECT_MIN_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
 const STABLE_CONNECTION_MS = 60_000;
-const PING_INTERVAL_MS = 30_000;
+const PING_INTERVAL_MS = 20_000;
 const LOG_TIMESTAMP = process.env.MACHINECTL_LOG_TIMESTAMP === "1";
+const LOG_KEEPALIVE = process.env.MACHINECTL_LOG_KEEPALIVE === "1";
 
 function log(...args: unknown[]) {
   // Prefix every line so it's obvious in mixed logs.
@@ -175,7 +176,12 @@ async function connectOnce(): Promise<void> {
     // through a hibernating Workers WebSocket attachment.
     const pingTimer = setInterval(() => {
       if (ws.readyState !== WebSocket.OPEN) return;
-      try { ws.send(JSON.stringify({ type: "ping" })); } catch {}
+      try {
+        ws.send(JSON.stringify({ type: "ping" }));
+        if (LOG_KEEPALIVE) log("keepalive ping sent");
+      } catch (err) {
+        logErr("failed to send keepalive ping:", err);
+      }
     }, PING_INTERVAL_MS);
 
     ws.on("message", async (data) => {
@@ -206,6 +212,10 @@ async function connectOnce(): Promise<void> {
         }
         case "ping": {
           try { ws.send(JSON.stringify({ type: "pong" })); } catch {}
+          return;
+        }
+        case "pong": {
+          if (LOG_KEEPALIVE) log("keepalive pong received");
           return;
         }
       }
