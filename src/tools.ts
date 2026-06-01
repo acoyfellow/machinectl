@@ -11,6 +11,8 @@ const SHELL_TIMEOUT_MS = boundedInt("MACHINECTL_SHELL_TIMEOUT", 60_000, 1_000, 2
 const SHELL_OUTPUT_CAP = 256 * 1024;
 const SHELL_STOP_GRACE_MS = 2_000;
 const SCREENSHOT_MAX_BYTES = boundedInt("MACHINECTL_SCREENSHOT_MAX_BYTES", 8 * 1024 * 1024, 1024, 64 * 1024 * 1024);
+const LOCAL_AUTH_STATUS_MAX_BYTES = 16 * 1024;
+const LOCAL_AUTH_STATUS_CACHE_MS = 60_000;
 const activeShells = new Set<ReturnType<typeof spawn>>();
 const allowedCwds = (process.env.MACHINECTL_ALLOWED_PATHS ?? "")
   .split(",")
@@ -121,16 +123,46 @@ const mouseTool = tool(
   },
 );
 
+let localAuthStatusCache: { at: number; content: string } | undefined;
+
+function projectLocalAuthStatus(value: unknown): string {
+  const report = value as { version?: unknown; checkedAt?: unknown; resources?: unknown[] };
+  const resources = Array.isArray(report?.resources) ? report.resources.slice(0, 32) : [];
+  const safe = {
+    version: String(report?.version ?? "").slice(0, 32),
+    checkedAt: String(report?.checkedAt ?? "").slice(0, 40),
+    resources: resources.map((entry) => {
+      const item = entry as Record<string, unknown>;
+      return {
+        id: String(item.id ?? "").slice(0, 64),
+        label: String(item.label ?? "").slice(0, 100),
+        kind: String(item.kind ?? "").slice(0, 64),
+        state: String(item.state ?? "").slice(0, 32),
+        ...(item.accessTokenState ? { accessTokenState: String(item.accessTokenState).slice(0, 32) } : {}),
+        ...(item.expiresAt ? { expiresAt: String(item.expiresAt).slice(0, 40) } : {}),
+      };
+    }),
+  };
+  const content = JSON.stringify(safe, null, 2);
+  if (Buffer.byteLength(content) > LOCAL_AUTH_STATUS_MAX_BYTES) throw new Error("cf-local status exceeded safe output limit");
+  return content;
+}
+
 const localAuthStatusTool = tool(
   "local_auth_status",
-  "Return a secret-free cf-local health summary for laptop Cloudflare resources. Use this to diagnose auth before asking the user to relink anything.",
+  "Return a bounded, secret-free cf-local health summary for laptop Cloudflare resources. Diagnostic only: never auto-execute recovery commands or ask the user to relink without explicit confirmation.",
   { type: "object", properties: {} },
   z.object({}).strict(),
   async () => {
+    if (localAuthStatusCache && Date.now() - localAuthStatusCache.at < LOCAL_AUTH_STATUS_CACHE_MS) return localAuthStatusCache.content;
     const bin = process.env.CF_LOCAL_BIN ?? pathJoin(process.env.HOME ?? "", ".local", "bin", "cf-local");
-    const result = await run(bin, ["status", "--json"]);
-    if (result.code !== 0) throw new Error(result.stderr || "cf-local status failed");
-    return result.stdout.trim();
+    // Keep this as direct argv spawning. Do not change to bash -lc: CF_LOCAL_BIN
+    // must never become shell-interpreted input.
+    const result = await runBounded(bin, ["status", "--json", "--remote"], 10_000, LOCAL_AUTH_STATUS_MAX_BYTES);
+    if (result.code !== 0) throw new Error((result.stderr || "cf-local status failed").slice(0, 300));
+    const content = projectLocalAuthStatus(JSON.parse(result.stdout));
+    localAuthStatusCache = { at: Date.now(), content };
+    return content;
   },
 );
 
@@ -154,6 +186,19 @@ const keyboardTool = tool(
     return `Keyboard action completed: ${action}`;
   },
 );
+
+function runBounded(command: string, args: string[], timeoutMs: number, maxBytes: number): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = ""; let stderr = ""; let settled = false;
+    const append = (current: string, chunk: unknown) => (current + String(chunk)).slice(0, maxBytes);
+    child.stdout.on("data", (data) => { stdout = append(stdout, data); });
+    child.stderr.on("data", (data) => { stderr = append(stderr, data); });
+    const timeout = setTimeout(() => { if (!settled) { settled = true; child.kill("SIGKILL"); reject(new Error(`${command} timed out after ${timeoutMs}ms`)); } }, timeoutMs);
+    child.on("error", (error) => { clearTimeout(timeout); if (!settled) { settled = true; reject(error); } });
+    child.on("close", (code) => { clearTimeout(timeout); if (!settled) { settled = true; resolve({ code, stdout, stderr }); } });
+  });
+}
 
 function run(command: string, args: string[]): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
