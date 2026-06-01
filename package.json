@@ -2,7 +2,7 @@
   "name": "machinectl",
   "version": "0.4.0",
   "type": "module",
-  "description": "Expose shell, screen, mouse, keyboard, and optional pi RPC control through an authenticated MCP relay.",
+  "description": "Securely control your computer from any device through an authenticated MCP relay.",
   "license": "MIT",
   "repository": {
     "type": "git",
