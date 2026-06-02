@@ -26,8 +26,11 @@ const PI_CONTROL_COMMANDS = [
 type Status = "idle" | "running" | "stopping" | "stopped" | "exited" | "error" | "timed_out";
 type PiControlCommand = typeof PI_CONTROL_COMMANDS[number];
 
+type HarnessId = "pi" | "opencode";
+
 type Session = {
   id: string;
+  harnessId: HarnessId;
   cwd: string;
   title?: string;
   command: string[];
@@ -62,6 +65,7 @@ const configuredRoots = (process.env.MACHINECTL_ALLOWED_PATHS || "")
   .map((root) => pathResolve(root));
 const hasConfiguredPathRoots = configuredRoots.length > 0;
 const PI_TOOLS_ENABLED = process.env.MACHINECTL_ENABLE_PI === "1" || process.env.MACHINECTL_ENABLE_PI === "true";
+const OPENCODE_TOOLS_ENABLED = process.env.MACHINECTL_ENABLE_OPENCODE === "1" || process.env.MACHINECTL_ENABLE_OPENCODE === "true";
 let cachedCanonicalRoots: Promise<string[]> | undefined;
 
 function boundedInt(envName: string, fallback: number, min: number, max: number): number {
@@ -126,13 +130,14 @@ async function requireCwd(path: string): Promise<string> {
 function mustGetSession(id: string): Session {
   trimFinishedSessions();
   const session = sessions.get(id);
-  if (!session) throw new Error(`Unknown pi session: ${id}`);
+  if (!session) throw new Error(`Unknown harness session: ${id}`);
   return session;
 }
 
 function publicSession(session: Session) {
   return {
     id: session.id,
+    harnessId: session.harnessId,
     cwd: session.cwd,
     title: session.title ?? null,
     status: session.status,
@@ -230,7 +235,7 @@ function attachOutput(session: Session) {
   });
 }
 
-function registerProcess(cwd: string, title: string | undefined, command: string[]): Session {
+function registerProcess(harnessId: HarnessId, cwd: string, title: string | undefined, command: string[]): Session {
   assertCapacity();
   const child = spawn(command[0], command.slice(1), {
     cwd,
@@ -240,9 +245,9 @@ function registerProcess(cwd: string, title: string | undefined, command: string
   });
   const session = {} as Session;
   Object.assign(session, {
-    id: randomUUID(), cwd, title, command, process: child, status: "idle",
+    id: randomUUID(), harnessId, cwd, title, command, process: child, status: harnessId === "opencode" ? "running" : "idle",
     startedAt: Date.now(), updatedAt: Date.now(), output: "", events: [], responseWaiters: new Map(),
-    lifetimeTimer: setTimeout(() => stopSession(session, "timed_out", `Pi session exceeded maximum runtime of ${SESSION_MAX_RUNTIME_MS}ms.`), SESSION_MAX_RUNTIME_MS),
+    lifetimeTimer: setTimeout(() => stopSession(session, "timed_out", `Harness session exceeded maximum runtime of ${SESSION_MAX_RUNTIME_MS}ms.`), SESSION_MAX_RUNTIME_MS),
   });
   sessions.set(session.id, session);
   attachOutput(session);
@@ -287,8 +292,20 @@ async function startPi(args: { cwd: string; prompt?: string; title?: string; mod
   if (args.thinking) command.push("--thinking", args.thinking);
   if (args.session) command.push("--session", await validateSessionReference(args.session, cwd));
   else if (args.continueRecent) command.push("--continue");
-  const session = registerProcess(cwd, args.title, command);
+  const session = registerProcess("pi", cwd, args.title, command);
   if (args.prompt) await sendPi(session, { type: "prompt", message: args.prompt });
+  return session;
+}
+
+async function startOpenCode(args: { cwd: string; prompt?: string; title?: string; model?: string }): Promise<Session> {
+  const cwd = await requireCwd(args.cwd);
+  if (!args.prompt?.trim()) throw new Error("opencode harness_start requires prompt");
+  const command = ["opencode", "run", "--format", "json"];
+  if (args.model) command.push("--model", args.model);
+  if (args.title) command.push("--title", args.title);
+  command.push(args.prompt);
+  const session = registerProcess("opencode", cwd, args.title, command);
+  session.process.stdin.end();
   return session;
 }
 
@@ -340,8 +357,8 @@ function jsonTool<S extends z.ZodTypeAny>(name: string, description: string, sch
 }
 
 export function buildAgentSessionTools(): RegisteredTool[] {
-  if (!PI_TOOLS_ENABLED || !hasConfiguredPathRoots) return [];
-  const piTools: RegisteredTool[] = [
+  if ((!PI_TOOLS_ENABLED && !OPENCODE_TOOLS_ENABLED) || !hasConfiguredPathRoots) return [];
+  const piTools: RegisteredTool[] = PI_TOOLS_ENABLED ? [
     jsonTool("pi_start", `Start a live local pi RPC session inside configured paths. Maximum ${MAX_SESSIONS} active sessions; maximum runtime ${SESSION_MAX_RUNTIME_MS}ms.`, {
       type: "object", properties: { cwd: { type: "string" }, title: { type: "string" }, model: { type: "string" }, thinking: { type: "string" }, continueRecent: { type: "boolean" }, session: { type: "string" } }, required: ["cwd"],
     }, z.object({ cwd: z.string().min(1), title: z.string().optional(), model: z.string().optional(), thinking: z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]).optional(), continueRecent: z.boolean().optional(), session: z.string().optional() }), async (args) => json({ session: publicSession(await startPi(args)) })),
@@ -361,37 +378,26 @@ export function buildAgentSessionTools(): RegisteredTool[] {
     }),
     jsonTool("pi_abort", "Abort current work in a local pi RPC session.", { type: "object", properties: { id: { type: "string" } }, required: ["id"] }, z.object({ id: z.string() }), async ({ id }) => json(await sendPi(mustGetSession(id), { type: "abort" }).catch(() => ({ aborted: false })))),
     jsonTool("pi_stop", "Stop a local pi RPC session and retain captured logs for inspection.", { type: "object", properties: { id: { type: "string" } }, required: ["id"] }, z.object({ id: z.string() }), async ({ id }) => { const session = mustGetSession(id); stopSession(session, "stopped", "Pi session stopped by remote caller."); return json({ session: publicSession(session) }); }),
+  ] : [];
+  const adapters = [
+    ...(PI_TOOLS_ENABLED ? [{ id: "pi", label: "Pi", capabilities: ["start", "list", "status", "logs", "prompt", "steer", "follow_up", "control", "abort", "stop", "persisted_sessions"] }] : []),
+    ...(OPENCODE_TOOLS_ENABLED ? [{ id: "opencode", label: "OpenCode", capabilities: ["start", "list", "status", "logs", "stop"] }] : []),
   ];
-  const byName = new Map(piTools.map((tool) => [tool.name, tool]));
-  const alias = (name: string, description: string, target: string): RegisteredTool => {
-    const original = byName.get(target);
-    if (!original) throw new Error(`missing pi compatibility tool: ${target}`);
-    const properties = (original.inputSchemaJson.properties ?? {}) as Record<string, unknown>;
-    return {
-      name,
-      description,
-      inputSchemaJson: { ...original.inputSchemaJson, properties: { harnessId: { type: "string", enum: ["pi"], description: "Harness adapter id. Currently pi." }, ...properties } },
-      validator: z.object({ harnessId: z.literal("pi").optional() }).passthrough(),
-      handler: async (args) => {
-        const { harnessId: _harnessId, ...rest } = args as Record<string, unknown>;
-        const parsed = original.validator.safeParse(rest);
-        if (!parsed.success) throw new Error(parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("; "));
-        return original.handler(parsed.data);
-      },
-    };
-  };
+  const sessionValidator = z.object({ harnessId: z.enum(["pi", "opencode"]).optional(), id: z.string() });
+  const sessionSchema = { type: "object", properties: { harnessId: { type: "string", enum: adapters.map((adapter) => adapter.id) }, id: { type: "string" } }, required: ["id"] };
+  const requireCapability = (id: string, capability: string) => { const session = mustGetSession(id); const adapter = adapters.find((item) => item.id === session.harnessId); if (!adapter?.capabilities.includes(capability)) throw new Error(`Harness ${session.harnessId} does not support ${capability}.`); return session; };
   return [
-    jsonTool("harness_catalog", "List available local delegated-agent harnesses and their honest capabilities.", { type: "object", properties: {} }, z.object({}).strict(), async () => json({ harnesses: [{ id: "pi", label: "Pi", capabilities: ["start", "list", "status", "logs", "prompt", "steer", "follow_up", "control", "abort", "stop", "persisted_sessions"] }] })),
-    alias("harness_start", "Start a local delegated-agent harness session. Currently supported harnessId: pi.", "pi_start"),
-    alias("harness_list", "List active/recent local delegated-agent harness sessions.", "pi_list"),
-    alias("harness_status", "Get normalized status and recent events for a local delegated-agent harness session.", "pi_status"),
-    alias("harness_logs", "Read bounded logs from a local delegated-agent harness session.", "pi_logs"),
-    alias("harness_prompt", "Send a prompt to a local delegated-agent harness session.", "pi_prompt"),
-    alias("harness_steer", "Queue steering guidance when the selected harness supports it.", "pi_steer"),
-    alias("harness_follow_up", "Queue follow-up work when the selected harness supports it.", "pi_follow_up"),
-    alias("harness_control", "Issue an allow-listed harness-specific control command.", "pi_command"),
-    alias("harness_abort", "Abort current work in a local delegated-agent harness session.", "pi_abort"),
-    alias("harness_stop", "Stop a local delegated-agent harness session and retain bounded logs.", "pi_stop"),
+    jsonTool("harness_catalog", "List available local delegated-agent harnesses and their honest capabilities.", { type: "object", properties: {} }, z.object({}).strict(), async () => json({ harnesses: adapters })),
+    jsonTool("harness_start", "Start a local delegated-agent harness session.", { type: "object", properties: { harnessId: { type: "string", enum: adapters.map((adapter) => adapter.id) }, cwd: { type: "string" }, prompt: { type: "string" }, title: { type: "string" }, model: { type: "string" }, thinking: { type: "string" }, continueRecent: { type: "boolean" }, session: { type: "string" } }, required: ["harnessId", "cwd"] }, z.object({ harnessId: z.enum(["pi", "opencode"]), cwd: z.string().min(1), prompt: z.string().optional(), title: z.string().optional(), model: z.string().optional(), thinking: z.string().optional(), continueRecent: z.boolean().optional(), session: z.string().optional() }), async ({ harnessId, ...args }) => { if (!adapters.some((adapter) => adapter.id === harnessId)) throw new Error(`Harness ${harnessId} is not enabled.`); return json({ session: publicSession(harnessId === "pi" ? await startPi(args) : await startOpenCode(args)) }); }),
+    jsonTool("harness_list", "List active/recent local delegated-agent harness sessions.", { type: "object", properties: { harnessId: { type: "string", enum: adapters.map((adapter) => adapter.id) }, limit: { type: "number" } } }, z.object({ harnessId: z.enum(["pi", "opencode"]).optional(), limit: z.number().int().min(1).max(50).optional().default(20) }), async ({ harnessId, limit }) => { trimFinishedSessions(); return json({ sessions: [...sessions.values()].filter((session) => !harnessId || session.harnessId === harnessId).map(publicSession).slice(-limit) }); }),
+    jsonTool("harness_status", "Get normalized status and recent events for a local delegated-agent harness session.", { ...sessionSchema, properties: { ...sessionSchema.properties, eventLimit: { type: "number" } } }, sessionValidator.extend({ eventLimit: z.number().int().min(0).max(100).optional().default(20) }), async ({ id, eventLimit }) => { const session = mustGetSession(id); return json({ session: publicSession(session), recentEvents: session.events.slice(-eventLimit) }); }),
+    jsonTool("harness_logs", "Read bounded logs from a local delegated-agent harness session.", { ...sessionSchema, properties: { ...sessionSchema.properties, tailChars: { type: "number" } } }, sessionValidator.extend({ tailChars: z.number().int().min(1).max(OUTPUT_CAP).optional().default(20000) }), async ({ id, tailChars }) => mustGetSession(id).output.slice(-tailChars) || "(no output yet)"),
+    jsonTool("harness_prompt", "Send a prompt when the selected harness supports it.", { ...sessionSchema, properties: { ...sessionSchema.properties, message: { type: "string" } }, required: ["id", "message"] }, sessionValidator.extend({ message: z.string().min(1) }), async ({ id, message }) => json(await sendPi(requireCapability(id, "prompt"), { type: "prompt", message }))),
+    jsonTool("harness_steer", "Queue steering guidance when the selected harness supports it.", { ...sessionSchema, properties: { ...sessionSchema.properties, message: { type: "string" } }, required: ["id", "message"] }, sessionValidator.extend({ message: z.string().min(1) }), async ({ id, message }) => json(await sendPi(requireCapability(id, "steer"), { type: "steer", message }))),
+    jsonTool("harness_follow_up", "Queue follow-up work when the selected harness supports it.", { ...sessionSchema, properties: { ...sessionSchema.properties, message: { type: "string" } }, required: ["id", "message"] }, sessionValidator.extend({ message: z.string().min(1) }), async ({ id, message }) => json(await sendPi(requireCapability(id, "follow_up"), { type: "follow_up", message }))),
+    jsonTool("harness_control", "Issue an allow-listed adapter-specific control command when supported.", { ...sessionSchema, properties: { ...sessionSchema.properties, command: { type: "string" }, args: { type: "object" } }, required: ["id", "command"] }, sessionValidator.extend({ command: z.enum(PI_CONTROL_COMMANDS), args: z.record(z.unknown()).optional().default({}) }), async ({ id, command, args }) => { const session = requireCapability(id, "control"); return json(await sendPi(session, { ...await validatePiControlArgs(command, args, session), type: command }, command === "compact" ? 120_000 : 10_000)); }),
+    jsonTool("harness_abort", "Abort current work when the selected harness supports it.", sessionSchema, sessionValidator, async ({ id }) => json(await sendPi(requireCapability(id, "abort"), { type: "abort" }).catch(() => ({ aborted: false })))),
+    jsonTool("harness_stop", "Stop a local delegated-agent harness session and retain bounded logs.", sessionSchema, sessionValidator, async ({ id }) => { const session = requireCapability(id, "stop"); stopSession(session, "stopped", "Harness session stopped by remote caller."); return json({ session: publicSession(session) }); }),
     ...piTools,
   ];
 }

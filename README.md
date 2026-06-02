@@ -85,7 +85,8 @@ The relay is deliberately separate from the daemon: you can use the included Clo
 - A trusted compatible Worker relay
   - the included Cloudflare Worker example requires a Cloudflare account, hostname and Access application
 - `cloudflared` on the laptop when authenticating to a Cloudflare Access-protected relay
-- Optional: `pi` on `PATH` for structured pi RPC control
+- Optional: `pi` on `PATH` for live structured Pi RPC control
+- Optional: `opencode` on `PATH` for bounded one-shot OpenCode harness runs
 
 ### 1. Install the daemon
 
@@ -152,6 +153,7 @@ For explicit working directories and optional pi support:
 MACHINECTL_URL=https://machinectl.example.com \
 MACHINECTL_ALLOWED_PATHS="$HOME/projects" \
 MACHINECTL_ENABLE_PI=1 \
+MACHINECTL_ENABLE_OPENCODE=1 \
   npm start
 ```
 
@@ -248,7 +250,7 @@ MACHINECTL_ALLOWED_PATHS="$HOME/projects"
 | `harness_abort` | Abort current work. |
 | `harness_stop` | Stop the process tree while preserving bounded logs in memory. |
 
-Pi is currently the first adapter. The existing `pi_*` tools remain as deprecated compatibility aliases. Process handles are retained in daemon memory; a daemon restart loses active handles.
+Pi and OpenCode are the initial adapters. Pi supports live RPC steering. OpenCode uses bounded one-shot `opencode run --format json` execution and intentionally advertises only start/list/status/logs/stop. The existing `pi_*` tools remain as deprecated compatibility aliases. Process handles are retained in daemon memory; a daemon restart loses active handles.
 
 ## Code Mode
 
@@ -266,7 +268,8 @@ That orchestration layer belongs in the authenticated client or relay. The daemo
 | `MACHINECTL_ALLOWED_PATHS` | empty | Permitted explicit `shell.cwd` roots and optional pi project/session roots. |
 | `MACHINECTL_SHELL_TIMEOUT` | `60000` | Default shell timeout in milliseconds. |
 | `MACHINECTL_SCREENSHOT_MAX_BYTES` | `8388608` | Maximum PNG bytes returned from a screenshot. |
-| `MACHINECTL_ENABLE_PI` | unset | Set to `1` or `true` to publish optional pi RPC tools. |
+| `MACHINECTL_ENABLE_PI` | unset | Set to `1` or `true` to publish the Pi adapter and deprecated `pi_*` aliases. |
+| `MACHINECTL_ENABLE_OPENCODE` | unset | Set to `1` or `true` to publish the bounded one-shot OpenCode adapter. |
 | `MACHINECTL_PI_MAX_SESSIONS` | `4` | Maximum concurrently active pi RPC sessions. |
 | `MACHINECTL_PI_MAX_RUNTIME_MS` | `7200000` | Maximum lifetime of a tracked pi process. |
 | `MACHINECTL_PI_STOP_GRACE_MS` | `5000` | Grace period before force-killing a stopped pi process group. |
