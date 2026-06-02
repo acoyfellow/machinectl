@@ -1,6 +1,6 @@
 # Cloudflare Worker relay example
 
-Reference Worker endpoint for the `machinectl` laptop daemon. It relays the core `shell`, `screenshot`, `mouse`, and `keyboard` tools plus optional `pi_*` RPC tools when enabled on the daemon. It provides:
+Reference Worker endpoint for the `machinectl` laptop daemon. It relays the core `shell`, `screenshot`, `mouse`, and `keyboard` tools plus optional delegated-agent `harness_*` tools when enabled on the daemon. Pi and OpenCode are current adapters; deprecated `pi_*` compatibility tools may also be published. It provides:
 
 - Cloudflare Access JWT verification in Worker code;
 - a per-user `MachineHost` Durable Object;
@@ -73,6 +73,8 @@ export MACHINECTL_URL=https://machinectl.example.com
 cloudflared access login "$MACHINECTL_URL"
 
 MACHINECTL_ALLOWED_PATHS=/Users/you/projects \
+MACHINECTL_ENABLE_PI=1 \
+MACHINECTL_ENABLE_OPENCODE=1 \
   node dist/index.js
 ```
 
@@ -107,7 +109,8 @@ Receipts are written after execution. A receipt storage failure is logged but do
 
 - The daemon exposes `shell`, which is terminal-equivalent by design.
 - `screenshot`, `mouse`, and `keyboard` can disclose or operate logged-in desktop state.
-- Optional `pi_*` tools can disclose or control local pi sessions.
+- Optional `harness_*` tools can disclose or control local delegated-agent sessions; discover each adapter's capabilities before invoking it.
+- Deprecated `pi_*` tools can disclose or control local pi sessions when retained for compatibility.
 - Anyone authorized by your Access policy can invoke tools on the connected laptop.
 - A new daemon connection for the same user replaces the previous connection.
 - Do not transmit secrets unless your end-to-end logging and retention policy is appropriate for them.

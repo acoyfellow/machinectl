@@ -70,10 +70,10 @@ function summarizeArgs(tool: string, args: Record<string, unknown>) {
     ? ["cwd", "timeoutMs"]
     : tool === "mouse"
       ? ["action", "x", "y", "delta"]
-      : tool === "pi_start"
-        ? ["cwd", "model", "thinking", "continueRecent"]
-        : tool === "pi_status" || tool === "pi_stop" || tool === "pi_abort" || tool === "pi_command"
-          ? ["id", "command"]
+      : tool === "harness_start" || tool === "pi_start"
+        ? ["harnessId", "cwd", "model", "thinking", "continueRecent"]
+        : ["harness_status", "harness_stop", "harness_abort", "harness_control", "pi_status", "pi_stop", "pi_abort", "pi_command"].includes(tool)
+          ? ["harnessId", "id", "command"]
           : [];
   const summary: Record<string, unknown> = {};
   for (const key of allowedKeys) {

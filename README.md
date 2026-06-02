@@ -52,6 +52,30 @@ harness_control({ harnessId: "pi", id: "<session-id>", command: "get_last_assist
 harness_stop({ harnessId: "pi", id: "<session-id>" })
 ```
 
+## Why this is different
+
+`machinectl` is not a cloud sandbox, a Screen Sharing server, or a desktop assistant app. It is an authenticated outbound control channel to a **real user-owned computer**:
+
+- unlike sandbox computer-use systems, it reaches the apps, files and sessions already on your laptop;
+- unlike remote desktop/VNC, it does not require exposing an inbound desktop service;
+- unlike local automation CLIs, it makes those capabilities reachable from another authenticated device or agent;
+- unlike a desktop companion, it stays deliberately small: transport, machine capabilities and delegated-agent adapters.
+
+## Built with Cloudflare
+
+The reference architecture demonstrates a Cloudflare-native device-connector pattern:
+
+| Primitive | Role |
+|---|---|
+| Cloudflare Access | Authenticates the human or agent allowed to reach a high-authority private device. |
+| Workers | Hosts the MCP relay endpoint and policy boundary. |
+| Durable Objects | Routes one live outbound-connected laptop per authenticated identity. |
+| WebSocket Hibernation | Keeps the long-lived device channel economical. |
+| KV, optional | Stores content-minimizing audit receipts without command output content. |
+| Code Mode / Dynamic Workers | An adopting client can orchestrate the compact machine tool surface through isolated generated code. |
+
+The deployed dogfood client uses Code Mode as its preferred model-facing interface; the public reference relay intentionally remains raw MCP-compatible and easy to inspect.
+
 ## Architecture
 
 `machinectl` is the **laptop daemon**. A remote caller needs a compatible authenticated relay. This repository includes a deployable Cloudflare Worker relay reference in [`examples/cloudflare-worker-relay`](./examples/cloudflare-worker-relay/).
@@ -147,7 +171,7 @@ Expected output:
 [machinectl] connected; publishing tool catalog
 ```
 
-For explicit working directories and optional pi support:
+For explicit working directories and optional delegated-agent adapters:
 
 ```bash
 MACHINECTL_URL=https://machinectl.example.com \
@@ -229,11 +253,12 @@ Returns a bounded allowlisted projection from `cf-local status --json --remote`.
 
 ### Optional delegated-agent harness tools
 
-Set both of the following before starting the daemon:
+Configure allowed roots plus whichever adapters you want to expose before starting the daemon:
 
 ```bash
-MACHINECTL_ENABLE_PI=1
 MACHINECTL_ALLOWED_PATHS="$HOME/projects"
+MACHINECTL_ENABLE_PI=1          # live RPC steering + pi_* compatibility aliases
+MACHINECTL_ENABLE_OPENCODE=1    # bounded one-shot OpenCode runs
 ```
 
 | Tool | Purpose |
