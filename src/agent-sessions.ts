@@ -341,7 +341,7 @@ function jsonTool<S extends z.ZodTypeAny>(name: string, description: string, sch
 
 export function buildAgentSessionTools(): RegisteredTool[] {
   if (!PI_TOOLS_ENABLED || !hasConfiguredPathRoots) return [];
-  return [
+  const piTools: RegisteredTool[] = [
     jsonTool("pi_start", `Start a live local pi RPC session inside configured paths. Maximum ${MAX_SESSIONS} active sessions; maximum runtime ${SESSION_MAX_RUNTIME_MS}ms.`, {
       type: "object", properties: { cwd: { type: "string" }, title: { type: "string" }, model: { type: "string" }, thinking: { type: "string" }, continueRecent: { type: "boolean" }, session: { type: "string" } }, required: ["cwd"],
     }, z.object({ cwd: z.string().min(1), title: z.string().optional(), model: z.string().optional(), thinking: z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]).optional(), continueRecent: z.boolean().optional(), session: z.string().optional() }), async (args) => json({ session: publicSession(await startPi(args)) })),
@@ -361,5 +361,37 @@ export function buildAgentSessionTools(): RegisteredTool[] {
     }),
     jsonTool("pi_abort", "Abort current work in a local pi RPC session.", { type: "object", properties: { id: { type: "string" } }, required: ["id"] }, z.object({ id: z.string() }), async ({ id }) => json(await sendPi(mustGetSession(id), { type: "abort" }).catch(() => ({ aborted: false })))),
     jsonTool("pi_stop", "Stop a local pi RPC session and retain captured logs for inspection.", { type: "object", properties: { id: { type: "string" } }, required: ["id"] }, z.object({ id: z.string() }), async ({ id }) => { const session = mustGetSession(id); stopSession(session, "stopped", "Pi session stopped by remote caller."); return json({ session: publicSession(session) }); }),
+  ];
+  const byName = new Map(piTools.map((tool) => [tool.name, tool]));
+  const alias = (name: string, description: string, target: string): RegisteredTool => {
+    const original = byName.get(target);
+    if (!original) throw new Error(`missing pi compatibility tool: ${target}`);
+    const properties = (original.inputSchemaJson.properties ?? {}) as Record<string, unknown>;
+    return {
+      name,
+      description,
+      inputSchemaJson: { ...original.inputSchemaJson, properties: { harnessId: { type: "string", enum: ["pi"], description: "Harness adapter id. Currently pi." }, ...properties } },
+      validator: z.object({ harnessId: z.literal("pi").optional() }).passthrough(),
+      handler: async (args) => {
+        const { harnessId: _harnessId, ...rest } = args as Record<string, unknown>;
+        const parsed = original.validator.safeParse(rest);
+        if (!parsed.success) throw new Error(parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("; "));
+        return original.handler(parsed.data);
+      },
+    };
+  };
+  return [
+    jsonTool("harness_catalog", "List available local delegated-agent harnesses and their honest capabilities.", { type: "object", properties: {} }, z.object({}).strict(), async () => json({ harnesses: [{ id: "pi", label: "Pi", capabilities: ["start", "list", "status", "logs", "prompt", "steer", "follow_up", "control", "abort", "stop", "persisted_sessions"] }] })),
+    alias("harness_start", "Start a local delegated-agent harness session. Currently supported harnessId: pi.", "pi_start"),
+    alias("harness_list", "List active/recent local delegated-agent harness sessions.", "pi_list"),
+    alias("harness_status", "Get normalized status and recent events for a local delegated-agent harness session.", "pi_status"),
+    alias("harness_logs", "Read bounded logs from a local delegated-agent harness session.", "pi_logs"),
+    alias("harness_prompt", "Send a prompt to a local delegated-agent harness session.", "pi_prompt"),
+    alias("harness_steer", "Queue steering guidance when the selected harness supports it.", "pi_steer"),
+    alias("harness_follow_up", "Queue follow-up work when the selected harness supports it.", "pi_follow_up"),
+    alias("harness_control", "Issue an allow-listed harness-specific control command.", "pi_command"),
+    alias("harness_abort", "Abort current work in a local delegated-agent harness session.", "pi_abort"),
+    alias("harness_stop", "Stop a local delegated-agent harness session and retain bounded logs.", "pi_stop"),
+    ...piTools,
   ];
 }

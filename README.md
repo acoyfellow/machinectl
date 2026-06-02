@@ -2,7 +2,7 @@
 
 **Control your computer from any device, securely.**
 
-`machinectl` turns a laptop into an authenticated MCP-controlled machine over an outbound WebSocket connection. From a phone or another agent client, you can run shell commands, view and control the desktop, and optionally drive live local [`pi`](https://github.com/badlogic/pi-mono) sessions.
+`machinectl` turns a laptop into an authenticated MCP-controlled machine over an outbound WebSocket connection. From a phone or another agent client, you can run shell commands, view and control the desktop, and optionally drive local delegated-agent harness sessions. [`pi`](https://github.com/badlogic/pi-mono) is the first adapter.
 
 ```text
 phone / MCP client
@@ -14,7 +14,7 @@ Cloudflare Access + Worker relay
 machinectl daemon on your computer
         ├── shell / screenshot / mouse / keyboard
         ├── local_auth_status
-        └── optional live pi RPC sessions
+        └── optional delegated-agent harness sessions
 ```
 
 No inbound listener on your laptop. No public tunnel to your desktop. When the daemon disconnects, its tools disappear from the relay.
@@ -29,7 +29,7 @@ No inbound listener on your laptop. No public tunnel to your desktop. When the d
 | See the computer | `screenshot` | Capture the current desktop as a PNG |
 | Control the computer | `mouse`, `keyboard` | Move/click/scroll, type text, issue shortcuts |
 | Diagnose local auth | `local_auth_status` | Secret-free, bounded health summary from `cf-local` |
-| Drive local pi sessions | `pi_*` (opt-in) | Start, prompt, steer, inspect, abort and stop `pi --mode rpc` sessions |
+| Drive delegated agents | `harness_*` (opt-in) | Discover adapters; start, prompt, steer, inspect, abort and stop sessions. Pi is the first adapter. |
 
 ### Example: ordinary computer control
 
@@ -41,14 +41,15 @@ keyboard({ action: "type", text: "npm test" })
 keyboard({ action: "key", key: "return" })
 ```
 
-### Example: live local pi control
+### Example: delegated-agent harness control
 
 ```text
-pi_start({ cwd: "/Users/me/projects/app" })
-pi_prompt({ id: "<session-id>", message: "Inspect the failing tests and fix them." })
-pi_steer({ id: "<session-id>", message: "Do not modify migrations." })
-pi_command({ id: "<session-id>", command: "get_last_assistant_text" })
-pi_stop({ id: "<session-id>" })
+harness_catalog({})
+harness_start({ harnessId: "pi", cwd: "/Users/me/projects/app" })
+harness_prompt({ harnessId: "pi", id: "<session-id>", message: "Inspect the failing tests and fix them." })
+harness_steer({ harnessId: "pi", id: "<session-id>", message: "Do not modify migrations." })
+harness_control({ harnessId: "pi", id: "<session-id>", command: "get_last_assistant_text" })
+harness_stop({ harnessId: "pi", id: "<session-id>" })
 ```
 
 ## Architecture
@@ -224,7 +225,7 @@ local_auth_status({})
 
 Returns a bounded allowlisted projection from `cf-local status --json --remote`. It is diagnostic-only and should not be used to automatically trigger relinking or interactive recovery steps.
 
-### Optional `pi_*` tools
+### Optional delegated-agent harness tools
 
 Set both of the following before starting the daemon:
 
@@ -235,22 +236,23 @@ MACHINECTL_ALLOWED_PATHS="$HOME/projects"
 
 | Tool | Purpose |
 |---|---|
-| `pi_start` | Start a local live `pi --mode rpc` process in an allowed directory. |
-| `pi_list` | List active/recent tracked sessions and optionally permitted persisted sessions. |
-| `pi_status` | Read status and recent structured RPC events. |
-| `pi_logs` | Read captured process output. |
-| `pi_prompt` | Send a prompt to a live pi session. |
-| `pi_steer` | Steer work while pi is running. |
-| `pi_follow_up` | Queue subsequent work. |
-| `pi_command` | Issue allowlisted RPC control commands. |
-| `pi_abort` | Abort current work. |
-| `pi_stop` | Stop the process tree while preserving captured logs in memory. |
+| `harness_catalog` | List available adapters and honest capabilities. |
+| `harness_start` | Start a delegated-agent session. |
+| `harness_list` | List active/recent tracked sessions. |
+| `harness_status` | Read normalized status and recent events. |
+| `harness_logs` | Read bounded process output. |
+| `harness_prompt` | Send a prompt. |
+| `harness_steer` | Steer work when supported. |
+| `harness_follow_up` | Queue subsequent work when supported. |
+| `harness_control` | Issue an allowlisted adapter-specific command. |
+| `harness_abort` | Abort current work. |
+| `harness_stop` | Stop the process tree while preserving bounded logs in memory. |
 
-Pi process handles are retained in daemon memory. If the daemon restarts, active handles are lost; pi-persisted session files may still be opened later.
+Pi is currently the first adapter. The existing `pi_*` tools remain as deprecated compatibility aliases. Process handles are retained in daemon memory; a daemon restart loses active handles.
 
 ## Code Mode
 
-`machinectl` exposes a small underlying computer capability set. Code Mode is a natural higher-level interface for clients that support it: a client can expose one isolated `code` tool that orchestrates `shell`, desktop controls and `pi_*` operations without repeated model/tool round trips.
+`machinectl` exposes a small underlying computer capability set. Code Mode is a natural higher-level interface for clients that support it: a client can expose one isolated `code` tool that orchestrates `shell`, desktop controls and `harness_*` operations without repeated model/tool round trips.
 
 That orchestration layer belongs in the authenticated client or relay. The daemon deliberately remains a simple, inspectable computer-control backend.
 
@@ -276,7 +278,7 @@ An authenticated MCP caller is trusted with your computer:
 - `shell` is terminal-equivalent access as your local user;
 - `screenshot` can reveal private visible information;
 - `mouse` and `keyboard` can operate signed-in desktop applications;
-- `pi_*` tools can read and control local coding-session content;
+- `harness_*` tools can read and control local delegated-agent session content;
 - `local_auth_status` exposes only bounded diagnostic metadata, not credentials.
 
 The included relay example:
