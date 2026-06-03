@@ -1,16 +1,17 @@
-@font-face { font-family: "Google Sans Flex"; src: url("/fonts/GoogleSansFlex-Regular.ttf") format("truetype"); font-weight: 100 599; font-display: swap; }
-@font-face { font-family: "Google Sans Flex"; src: url("/fonts/GoogleSansFlex-SemiBold.ttf") format("truetype"); font-weight: 600 900; font-display: swap; }
-@font-face { font-family: "Google Sans Code"; src: url("/fonts/GoogleSansCode.ttf") format("truetype"); font-weight: 100 900; font-display: swap; }
+@font-face { font-family: "Open Sans"; src: url("/fonts/OpenSans-Regular.ttf") format("truetype"); font-weight: 100 599; font-display: swap; }
+@font-face { font-family: "Open Sans"; src: url("/fonts/OpenSans-SemiBold.ttf") format("truetype"); font-weight: 600 900; font-display: swap; }
+@font-face { font-family: "JetBrains Mono"; src: url("/fonts/JetBrainsMono-Regular.ttf") format("truetype"); font-weight: 100 599; font-display: swap; }
+@font-face { font-family: "JetBrains Mono"; src: url("/fonts/JetBrainsMono-SemiBold.ttf") format("truetype"); font-weight: 600 900; font-display: swap; }
 :root {
   --surface: #fff; --text: #111827; --muted: #6b7280; --black: #000; --line: #000;
   --success: #16a34a; --danger: #dc2626;
-  font-family: "Google Sans Flex"; color: var(--text); background: var(--surface);
+  font-family: "Open Sans"; color: var(--text); background: var(--surface);
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; min-height: 100%; background: var(--surface); color: var(--text); }
 body { font-size: 14px; line-height: 1.45; }
 button, input, textarea { font: inherit; }
-code, pre, input, textarea { font-family: "Google Sans Code"; }
+code, pre, input, textarea { font-family: "JetBrains Mono"; }
 button { appearance:none; border:1px solid var(--line); border-radius:999px; background:#fff; color:var(--text); padding:10px 16px; min-height:44px; cursor:pointer; transition:background .14s,color .14s; }
 button:hover:not(:disabled), button:active:not(:disabled) { background:#000; color:#fff; }
 button:focus-visible, input:focus-visible, textarea:focus-visible, a:focus-visible { outline:2px solid #000; outline-offset:3px; }
@@ -18,12 +19,12 @@ button:disabled { opacity:.38; cursor:not-allowed; }
 .bar { display:flex; align-items:center; justify-content:space-between; height:64px; padding:0 clamp(16px,4vw,32px); border-bottom:1px solid #000; }
 .brand { display:flex; align-items:center; gap:10px; font-size:20px; letter-spacing:-.04em; font-weight:600; }
 .mark { display:grid; place-items:center; width:30px; height:30px; border:1px solid #000; border-radius:999px; font-size:15px; }
-.badge { display:flex; gap:8px; align-items:center; font:12px "Google Sans Code"; text-transform:uppercase; }
+.badge { display:flex; gap:8px; align-items:center; font:12px "JetBrains Mono"; text-transform:uppercase; }
 .dot { width:8px; height:8px; border-radius:50%; background:var(--danger); }
 .badge[data-online="true"] .dot { background:var(--success); }
 main { padding:clamp(24px,6vw,64px) clamp(16px,4vw,32px) 48px; }
 .hero { max-width:1000px; margin-bottom:clamp(32px,7vw,72px); }
-.eyebrow, .card-title { margin:0 0 16px; font:12px "Google Sans Code"; letter-spacing:.12em; text-transform:uppercase; }
+.eyebrow, .card-title { margin:0 0 16px; font:12px "JetBrains Mono"; letter-spacing:.12em; text-transform:uppercase; }
 h1 { font-size:clamp(48px,9vw,104px); line-height:.94; letter-spacing:-.07em; font-weight:500; margin:0 0 24px; max-width:1100px; }
 .lead { font-size:clamp(16px,2.1vw,20px); line-height:1.5; max-width:720px; margin:0 0 32px; }
 .mcp-row { display:flex; flex-wrap:wrap; gap:12px; align-items:center; }
@@ -34,11 +35,11 @@ h1 { font-size:clamp(48px,9vw,104px); line-height:.94; letter-spacing:-.07em; fo
 .card { border-right:1px solid #000; border-bottom:1px solid #000; padding:clamp(20px,3vw,32px); min-height:270px; }
 .card h2 { font-size:clamp(24px,3vw,32px); font-weight:500; letter-spacing:-.05em; margin:0 0 20px; }
 .caps { display:flex; flex-wrap:wrap; gap:8px; margin:0 0 24px; }
-.pill { border:1px solid #000; border-radius:999px; font:12px "Google Sans Code"; text-transform:uppercase; padding:7px 12px; }
+.pill { border:1px solid #000; border-radius:999px; font:12px "JetBrains Mono"; text-transform:uppercase; padding:7px 12px; }
 .warning, .card p { margin:0; max-width:540px; font-size:14px; line-height:1.55; }
 .buttons { display:flex; flex-wrap:wrap; gap:8px; margin:0 0 16px; }
 .shell-line { display:flex; gap:8px; align-items:center; padding:4px 4px 4px 16px; min-height:52px; border:1px solid #000; border-radius:999px; margin-bottom:16px; }
-.shell-line span { font-family:"Google Sans Code"; }
+.shell-line span { font-family:"JetBrains Mono"; }
 .shell-line input { border:0; background:transparent; outline:none; flex:1; min-width:0; font-size:14px; }
 .shell-line button { min-height:42px; padding-block:8px; }
 #output { min-height:84px; max-height:220px; overflow:auto; white-space:pre-wrap; margin:0; padding:16px; background:#000; color:#fff; font-size:12px; line-height:1.55; }

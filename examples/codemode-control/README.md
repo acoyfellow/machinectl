@@ -2,6 +2,8 @@
 
 A minimal private control page and Code Mode-first MCP relay for `machinectl`.
 
+The included UI bundles Open Sans and JetBrains Mono under the SIL Open Font License; license texts are included alongside the font files.
+
 This is a second client implementation alongside any product integration: it is designed to be run locally for proof, or privately deployed behind **your own** Cloudflare Access policy. It is not a public demo site.
 
 ## What it includes
