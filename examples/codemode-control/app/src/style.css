@@ -22,7 +22,7 @@ button:disabled { opacity:.38; cursor:not-allowed; }
 main { padding:clamp(24px,6vw,64px) clamp(16px,4vw,32px) 48px; }
 .hero { max-width:1000px; margin-bottom:clamp(32px,7vw,72px); }
 .eyebrow, .card-title { margin:0 0 16px; font:12px "Fragment Mono", "SF Mono", "IBM Plex Mono", ui-monospace, monospace; letter-spacing:.12em; text-transform:uppercase; }
-h1 { font-size:clamp(48px,9vw,104px); line-height:.94; letter-spacing:-.07em; font-weight:500; margin:0 0 24px; max-width:1100px; }
+h1 { font-size:clamp(34px,5.4vw,64px); line-height:1.02; letter-spacing:-.055em; font-weight:500; margin:0 0 24px; max-width:820px; }
 .lead { font-size:clamp(16px,2.1vw,20px); line-height:1.5; max-width:720px; margin:0 0 32px; }
 .mcp-row { display:flex; flex-wrap:wrap; gap:12px; align-items:center; }
 .mcp-row code { min-height:44px; display:flex; align-items:center; padding:0 16px; border:1px solid #000; border-radius:999px; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
