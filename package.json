@@ -28,7 +28,8 @@
     "dev": "node --watch dist/index.js",
     "predev": "npm run build",
     "typecheck": "tsc --noEmit",
-    "test": "npm run typecheck && npm run build"
+    "test:unit": "npm run build && node --test test/*.test.mjs",
+    "test": "npm run typecheck && npm run test:unit"
   },
   "bin": {
     "machinectl": "./dist/index.js"

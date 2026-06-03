@@ -125,7 +125,7 @@ const mouseTool = tool(
 
 let localAuthStatusCache: { at: number; content: string } | undefined;
 
-function projectLocalAuthStatus(value: unknown): string {
+export function projectLocalAuthStatus(value: unknown): string {
   const report = value as { version?: unknown; checkedAt?: unknown; resources?: unknown[] };
   const resources = Array.isArray(report?.resources) ? report.resources.slice(0, 32) : [];
   const safe = {

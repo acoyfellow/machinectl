@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
+    "build:test": "rm -rf dist && tsc --noEmit false --outDir dist",
+    "test": "npm run typecheck && npm run build:test && node --test test/*.test.mjs && rm -rf dist",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "cf-typegen": "wrangler types"
