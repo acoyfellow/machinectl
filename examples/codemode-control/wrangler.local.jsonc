@@ -1,0 +1,24 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "machinectl-local",
+  "main": "worker/src/index.ts",
+  "compatibility_date": "2026-06-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": "./app/dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*", "/mcp", "/mcp/*", "/machinectl/*", "/health"]
+  },
+  "vars": {
+    "MACHINECTL_ENV": "development",
+    "MACHINECTL_DEV_AUTH": "1",
+    "MACHINECTL_DEV_EMAIL": "dev@machinectl.local"
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "MACHINE_HOST", "class_name": "MachineHost" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["MachineHost"] }],
+  "worker_loaders": [{ "binding": "LOADER" }],
+  "observability": { "enabled": true }
+}

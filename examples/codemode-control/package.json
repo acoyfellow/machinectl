@@ -1,0 +1,28 @@
+{
+  "name": "machinectl-codemode-control-example",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:app": "vite build",
+    "typecheck": "tsc --noEmit -p worker/tsconfig.json",
+    "build:worker": "npm run build:app && wrangler deploy --config wrangler.local.jsonc --dry-run --outdir dist/worker",
+    "build:test": "rm -rf dist/test && tsc --noEmit false --outDir dist/test --rootDir worker/src -p worker/tsconfig.json",
+    "dev:worker": "npm run build:app && wrangler dev --config wrangler.local.jsonc --local --persist-to .wrangler/state --port 8789",
+    "dev:app": "vite",
+    "test": "npm run typecheck && npm run build:test && node --test test/*.test.mjs && npm run build:worker"
+  },
+  "dependencies": {
+    "@cloudflare/codemode": "^0.3.8",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "hono": "^4.12.23",
+    "jose": "^6.2.3",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260525.0",
+    "typescript": "^5.7.3",
+    "vite": "^7.3.3",
+    "wrangler": "^4.92.0"
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "machinectl",
+  "main": "worker/src/index.ts",
+  "compatibility_date": "2026-06-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "routes": [{ "pattern": "machinectl.example.com", "custom_domain": true }],
+  "workers_dev": false,
+  "preview_urls": false,
+  "assets": {
+    "directory": "./app/dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*", "/mcp", "/mcp/*", "/machinectl/*", "/health"]
+  },
+  "vars": {
+    "MACHINECTL_ENV": "production",
+    "MACHINECTL_ALLOWED_EMAILS": "you@example.com",
+    "MACHINECTL_ALLOW_DIRECT_TOOLS": "0",
+    "CF_ACCESS_AUD": "replace-with-access-app-audience-tag",
+    "CF_ACCESS_ISS": "https://replace-with-your-team.cloudflareaccess.com"
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "MACHINE_HOST", "class_name": "MachineHost" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["MachineHost"] }],
+  "worker_loaders": [{ "binding": "LOADER" }],
+  "kv_namespaces": [{ "binding": "AUDIT_KV", "id": "replace-with-kv-namespace-id" }],
+  "observability": { "enabled": true }
+}

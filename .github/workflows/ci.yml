@@ -23,3 +23,7 @@ jobs:
         working-directory: examples/cloudflare-worker-relay
       - run: npm test
         working-directory: examples/cloudflare-worker-relay
+      - run: npm install
+        working-directory: examples/codemode-control
+      - run: npm test
+        working-directory: examples/codemode-control

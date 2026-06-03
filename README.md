@@ -74,7 +74,7 @@ The reference architecture demonstrates a Cloudflare-native device-connector pat
 | KV, optional | Stores content-minimizing audit receipts without command output content. |
 | Code Mode / Dynamic Workers | An adopting client can orchestrate the compact machine tool surface through isolated generated code. |
 
-The deployed dogfood client uses Code Mode as its preferred model-facing interface; the public reference relay intentionally remains raw MCP-compatible and easy to inspect.
+The deployed dogfood client uses Code Mode as its preferred model-facing interface. This repository also ships a thin Code Mode control client example for local proof or private deployment; the raw relay example remains available when you want the smallest inspectable MCP bridge.
 
 ## Architecture
 
@@ -98,6 +98,13 @@ The deployed dogfood client uses Code Mode as its preferred model-facing interfa
 ```
 
 The relay is deliberately separate from the daemon: you can use the included Cloudflare implementation or provide another compatible authenticated endpoint implementing the wire protocol in [`src/protocol.ts`](./src/protocol.ts).
+
+Two client/relay examples are included:
+
+| Example | Use it for |
+|---|---|
+| [`examples/cloudflare-worker-relay`](./examples/cloudflare-worker-relay/) | Smallest raw MCP relay behind Cloudflare Access. |
+| [`examples/codemode-control`](./examples/codemode-control/) | Thin private control page plus Code Mode-first MCP endpoint backed by Dynamic Workers. |
 
 ## Quick start
 
@@ -323,13 +330,35 @@ npm test
 npm run dev
 ```
 
-The relay example is independently typecheckable:
+The raw relay example is independently testable:
 
 ```bash
 cd examples/cloudflare-worker-relay
 npm install
-npm run typecheck
+npm test
 ```
+
+To run the thin Code Mode control page end to end locally:
+
+```bash
+cd examples/codemode-control
+npm install
+npm run dev:worker
+```
+
+Then, from the repository root in another terminal:
+
+```bash
+npm run build
+MACHINECTL_URL=http://127.0.0.1:8789 \
+MACHINECTL_ACCESS_TOKEN=dev \
+MACHINECTL_NAME=local-mac \
+MACHINECTL_ALLOWED_PATHS="$HOME/projects" \
+MACHINECTL_ENABLE_PI=1 \
+  node dist/index.js
+```
+
+Open `http://127.0.0.1:8789/`. See the example README for its private-deployment posture and Code Mode endpoint.
 
 ## License
 

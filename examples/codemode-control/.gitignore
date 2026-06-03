@@ -1,0 +1,7 @@
+node_modules/
+.wrangler/
+dist/
+app/dist/
+wrangler.jsonc
+.dev.vars
+.dev.vars.*
