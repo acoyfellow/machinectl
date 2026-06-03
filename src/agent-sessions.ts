@@ -26,7 +26,7 @@ const PI_CONTROL_COMMANDS = [
 type Status = "idle" | "running" | "stopping" | "stopped" | "exited" | "error" | "timed_out";
 type PiControlCommand = typeof PI_CONTROL_COMMANDS[number];
 
-type HarnessId = "pi" | "opencode";
+type HarnessId = "pi";
 
 type Session = {
   id: string;
@@ -65,7 +65,6 @@ const configuredRoots = (process.env.MACHINECTL_ALLOWED_PATHS || "")
   .map((root) => pathResolve(root));
 const hasConfiguredPathRoots = configuredRoots.length > 0;
 const PI_TOOLS_ENABLED = process.env.MACHINECTL_ENABLE_PI === "1" || process.env.MACHINECTL_ENABLE_PI === "true";
-const OPENCODE_TOOLS_ENABLED = process.env.MACHINECTL_ENABLE_OPENCODE === "1" || process.env.MACHINECTL_ENABLE_OPENCODE === "true";
 let cachedCanonicalRoots: Promise<string[]> | undefined;
 
 function boundedInt(envName: string, fallback: number, min: number, max: number): number {
@@ -245,7 +244,7 @@ function registerProcess(harnessId: HarnessId, cwd: string, title: string | unde
   });
   const session = {} as Session;
   Object.assign(session, {
-    id: randomUUID(), harnessId, cwd, title, command, process: child, status: harnessId === "opencode" ? "running" : "idle",
+    id: randomUUID(), harnessId, cwd, title, command, process: child, status: "idle",
     startedAt: Date.now(), updatedAt: Date.now(), output: "", events: [], responseWaiters: new Map(),
     lifetimeTimer: setTimeout(() => stopSession(session, "timed_out", `Harness session exceeded maximum runtime of ${SESSION_MAX_RUNTIME_MS}ms.`), SESSION_MAX_RUNTIME_MS),
   });
@@ -297,18 +296,6 @@ async function startPi(args: { cwd: string; prompt?: string; title?: string; mod
   return session;
 }
 
-async function startOpenCode(args: { cwd: string; prompt?: string; title?: string; model?: string }): Promise<Session> {
-  const cwd = await requireCwd(args.cwd);
-  if (!args.prompt?.trim()) throw new Error("opencode harness_start requires prompt");
-  const command = ["opencode", "run", "--format", "json"];
-  if (args.model) command.push("--model", args.model);
-  if (args.title) command.push("--title", args.title);
-  command.push(args.prompt);
-  const session = registerProcess("opencode", cwd, args.title, command);
-  session.process.stdin.end();
-  return session;
-}
-
 function processEnv(): NodeJS.ProcessEnv {
   const nodeBin = dirname(process.execPath);
   return { ...process.env, PATH: `${nodeBin}:${process.env.PATH ?? ""}`, NO_COLOR: "1", TERM: "dumb" };
@@ -357,7 +344,7 @@ function jsonTool<S extends z.ZodTypeAny>(name: string, description: string, sch
 }
 
 export function buildAgentSessionTools(): RegisteredTool[] {
-  if ((!PI_TOOLS_ENABLED && !OPENCODE_TOOLS_ENABLED) || !hasConfiguredPathRoots) return [];
+  if (!PI_TOOLS_ENABLED || !hasConfiguredPathRoots) return [];
   const piTools: RegisteredTool[] = PI_TOOLS_ENABLED ? [
     jsonTool("pi_start", `Start a live local pi RPC session inside configured paths. Maximum ${MAX_SESSIONS} active sessions; maximum runtime ${SESSION_MAX_RUNTIME_MS}ms.`, {
       type: "object", properties: { cwd: { type: "string" }, title: { type: "string" }, model: { type: "string" }, thinking: { type: "string" }, continueRecent: { type: "boolean" }, session: { type: "string" } }, required: ["cwd"],
@@ -381,15 +368,14 @@ export function buildAgentSessionTools(): RegisteredTool[] {
   ] : [];
   const adapters = [
     ...(PI_TOOLS_ENABLED ? [{ id: "pi", label: "Pi", capabilities: ["start", "list", "status", "logs", "prompt", "steer", "follow_up", "control", "abort", "stop", "persisted_sessions"] }] : []),
-    ...(OPENCODE_TOOLS_ENABLED ? [{ id: "opencode", label: "OpenCode", capabilities: ["start", "list", "status", "logs", "stop"] }] : []),
   ];
-  const sessionValidator = z.object({ harnessId: z.enum(["pi", "opencode"]).optional(), id: z.string() });
+  const sessionValidator = z.object({ harnessId: z.enum(["pi"]).optional(), id: z.string() });
   const sessionSchema = { type: "object", properties: { harnessId: { type: "string", enum: adapters.map((adapter) => adapter.id) }, id: { type: "string" } }, required: ["id"] };
   const requireCapability = (id: string, capability: string) => { const session = mustGetSession(id); const adapter = adapters.find((item) => item.id === session.harnessId); if (!adapter?.capabilities.includes(capability)) throw new Error(`Harness ${session.harnessId} does not support ${capability}.`); return session; };
   return [
     jsonTool("harness_catalog", "List available local delegated-agent harnesses and their honest capabilities.", { type: "object", properties: {} }, z.object({}).strict(), async () => json({ harnesses: adapters })),
-    jsonTool("harness_start", "Start a local delegated-agent harness session.", { type: "object", properties: { harnessId: { type: "string", enum: adapters.map((adapter) => adapter.id) }, cwd: { type: "string" }, prompt: { type: "string" }, title: { type: "string" }, model: { type: "string" }, thinking: { type: "string" }, continueRecent: { type: "boolean" }, session: { type: "string" } }, required: ["harnessId", "cwd"] }, z.object({ harnessId: z.enum(["pi", "opencode"]), cwd: z.string().min(1), prompt: z.string().optional(), title: z.string().optional(), model: z.string().optional(), thinking: z.string().optional(), continueRecent: z.boolean().optional(), session: z.string().optional() }), async ({ harnessId, ...args }) => { if (!adapters.some((adapter) => adapter.id === harnessId)) throw new Error(`Harness ${harnessId} is not enabled.`); return json({ session: publicSession(harnessId === "pi" ? await startPi(args) : await startOpenCode(args)) }); }),
-    jsonTool("harness_list", "List active/recent local delegated-agent harness sessions.", { type: "object", properties: { harnessId: { type: "string", enum: adapters.map((adapter) => adapter.id) }, limit: { type: "number" } } }, z.object({ harnessId: z.enum(["pi", "opencode"]).optional(), limit: z.number().int().min(1).max(50).optional().default(20) }), async ({ harnessId, limit }) => { trimFinishedSessions(); return json({ sessions: [...sessions.values()].filter((session) => !harnessId || session.harnessId === harnessId).map(publicSession).slice(-limit) }); }),
+    jsonTool("harness_start", "Start a local delegated-agent harness session.", { type: "object", properties: { harnessId: { type: "string", enum: adapters.map((adapter) => adapter.id) }, cwd: { type: "string" }, prompt: { type: "string" }, title: { type: "string" }, model: { type: "string" }, thinking: { type: "string" }, continueRecent: { type: "boolean" }, session: { type: "string" } }, required: ["harnessId", "cwd"] }, z.object({ harnessId: z.enum(["pi"]), cwd: z.string().min(1), prompt: z.string().optional(), title: z.string().optional(), model: z.string().optional(), thinking: z.string().optional(), continueRecent: z.boolean().optional(), session: z.string().optional() }), async ({ harnessId, ...args }) => { if (!adapters.some((adapter) => adapter.id === harnessId)) throw new Error(`Harness ${harnessId} is not enabled.`); return json({ session: publicSession(await startPi(args)) }); }),
+    jsonTool("harness_list", "List active/recent local delegated-agent harness sessions.", { type: "object", properties: { harnessId: { type: "string", enum: adapters.map((adapter) => adapter.id) }, limit: { type: "number" } } }, z.object({ harnessId: z.enum(["pi"]).optional(), limit: z.number().int().min(1).max(50).optional().default(20) }), async ({ harnessId, limit }) => { trimFinishedSessions(); return json({ sessions: [...sessions.values()].filter((session) => !harnessId || session.harnessId === harnessId).map(publicSession).slice(-limit) }); }),
     jsonTool("harness_status", "Get normalized status and recent events for a local delegated-agent harness session.", { ...sessionSchema, properties: { ...sessionSchema.properties, eventLimit: { type: "number" } } }, sessionValidator.extend({ eventLimit: z.number().int().min(0).max(100).optional().default(20) }), async ({ id, eventLimit }) => { const session = mustGetSession(id); return json({ session: publicSession(session), recentEvents: session.events.slice(-eventLimit) }); }),
     jsonTool("harness_logs", "Read bounded logs from a local delegated-agent harness session.", { ...sessionSchema, properties: { ...sessionSchema.properties, tailChars: { type: "number" } } }, sessionValidator.extend({ tailChars: z.number().int().min(1).max(OUTPUT_CAP).optional().default(20000) }), async ({ id, tailChars }) => mustGetSession(id).output.slice(-tailChars) || "(no output yet)"),
     jsonTool("harness_prompt", "Send a prompt when the selected harness supports it.", { ...sessionSchema, properties: { ...sessionSchema.properties, message: { type: "string" } }, required: ["id", "message"] }, sessionValidator.extend({ message: z.string().min(1) }), async ({ id, message }) => json(await sendPi(requireCapability(id, "prompt"), { type: "prompt", message }))),

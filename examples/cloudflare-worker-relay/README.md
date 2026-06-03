@@ -1,6 +1,6 @@
 # Cloudflare Worker relay example
 
-Reference Worker endpoint for the `machinectl` laptop daemon. It relays the core `shell`, `screenshot`, `mouse`, and `keyboard` tools plus optional delegated-agent `harness_*` tools when enabled on the daemon. Pi and OpenCode are current adapters; deprecated `pi_*` compatibility tools may also be published. It provides:
+Reference Worker endpoint for the `machinectl` laptop daemon. It relays the core `shell`, `screenshot`, `mouse`, and `keyboard` tools plus optional delegated-agent `harness_*` tools when enabled on the daemon. Pi is the initial adapter; deprecated `pi_*` compatibility tools may also be published. It provides:
 
 - Cloudflare Access JWT verification in Worker code;
 - a per-user `MachineHost` Durable Object;
@@ -74,7 +74,6 @@ cloudflared access login "$MACHINECTL_URL"
 
 MACHINECTL_ALLOWED_PATHS=/Users/you/projects \
 MACHINECTL_ENABLE_PI=1 \
-MACHINECTL_ENABLE_OPENCODE=1 \
   node dist/index.js
 ```
 

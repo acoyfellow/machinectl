@@ -69,12 +69,10 @@ test("enabled adapters publish honest harness capabilities", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "machinectl-harness-"));
   try {
     const source = `import { buildToolRegistry } from './dist/tools.js'; const tools = buildToolRegistry(); const catalog = tools.find(t => t.name === 'harness_catalog'); console.log(JSON.stringify({ names: tools.map(t => t.name), catalog: JSON.parse(await catalog.handler({})) }));`;
-    const result = parseRun(source, { MACHINECTL_ALLOWED_PATHS: cwd, MACHINECTL_ENABLE_PI: "1", MACHINECTL_ENABLE_OPENCODE: "1" });
+    const result = parseRun(source, { MACHINECTL_ALLOWED_PATHS: cwd, MACHINECTL_ENABLE_PI: "1" });
     const pi = result.catalog.harnesses.find((harness) => harness.id === "pi");
-    const opencode = result.catalog.harnesses.find((harness) => harness.id === "opencode");
+    assert.deepEqual(result.catalog.harnesses.map((harness) => harness.id), ["pi"]);
     assert.ok(pi.capabilities.includes("steer"));
-    assert.ok(opencode.capabilities.includes("start"));
-    assert.ok(!opencode.capabilities.includes("steer"));
     assert.ok(result.names.includes("pi_start"), "pi compatibility tools remain published");
   } finally {
     await rm(cwd, { recursive: true, force: true });
