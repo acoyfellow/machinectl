@@ -246,7 +246,7 @@ mouse({ action: "double_click", x: 400, y: 300 })
 mouse({ action: "scroll", delta: -4 })
 ```
 
-Implemented on macOS using System Events and requires user-approved Accessibility permission.
+Implemented on macOS using CoreGraphics pointer events and requires user-approved Accessibility permission.
 
 #### `keyboard`
 
@@ -268,7 +268,7 @@ input_sequence({ actions: [
 ] })
 ```
 
-Runs up to 32 mouse/keyboard actions in one macOS System Events process, reducing round trips and local process-spawn overhead during interactive operation. Typed text remains sensitive and must be redacted by compatible relay audit receipts.
+Runs up to 32 mouse/keyboard actions in one remote request, reducing round trips during interactive operation. Homogeneous pointer or keyboard batches are executed together locally; mixed batches preserve order. Typed text remains sensitive and must be redacted by compatible relay audit receipts.
 
 #### `local_auth_status`
 

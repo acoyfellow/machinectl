@@ -136,16 +136,37 @@ type InputAction =
   | { action: "type"; text: string }
   | { action: "key"; key: string; modifiers?: Array<"command" | "control" | "option" | "shift"> };
 
-function appleScriptForInput(action: InputAction): string {
-  if (action.action === "move") return `tell application "System Events" to set the position of the mouse to {${action.x}, ${action.y}}`;
-  if (action.action === "click") return `tell application "System Events" to click at {${action.x}, ${action.y}}`;
-  if (action.action === "double_click") return `tell application "System Events" to double click at {${action.x}, ${action.y}}`;
-  if (action.action === "scroll") return `tell application "System Events" to scroll ${action.delta}`;
+function appleScriptForKeyboard(action: Extract<InputAction, { action: "type" | "key" }>): string {
   if (action.action === "type") return `tell application "System Events" to keystroke ${JSON.stringify(action.text)}`;
   const codes: Record<string, number> = { return: 36, enter: 36, tab: 48, escape: 53, space: 49, delete: 51, up: 126, down: 125, left: 123, right: 124 };
   const modifiers = action.modifiers ?? [];
   const using = modifiers.length ? ` using {${modifiers.map((modifier) => `${modifier} down`).join(", ")}}` : "";
   return codes[action.key.toLowerCase()] !== undefined ? `tell application "System Events" to key code ${codes[action.key.toLowerCase()]}${using}` : `tell application "System Events" to keystroke ${JSON.stringify(action.key)}${using}`;
+}
+
+function swiftForPointerAction(action: Extract<InputAction, { action: "move" | "click" | "double_click" | "scroll" }>): string {
+  if (action.action === "move") return `CGWarpMouseCursorPosition(CGPoint(x: ${action.x}, y: ${action.y}))`;
+  if (action.action === "scroll") return `CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 1, wheel1: Int32(${action.delta}), wheel2: 0, wheel3: 0)!.post(tap: .cghidEventTap)`;
+  const click = `let p = CGPoint(x: ${action.x}, y: ${action.y}); CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: p, mouseButton: .left)!.post(tap: .cghidEventTap); CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: p, mouseButton: .left)!.post(tap: .cghidEventTap)`;
+  return action.action === "double_click" ? `${click}; ${click}` : click;
+}
+
+async function runInputActions(actions: InputAction[]): Promise<void> {
+  const keyboardActions = actions.filter((action): action is Extract<InputAction, { action: "type" | "key" }> => action.action === "type" || action.action === "key");
+  const pointerActions = actions.filter((action): action is Extract<InputAction, { action: "move" | "click" | "double_click" | "scroll" }> => action.action !== "type" && action.action !== "key");
+  // Preserve order when a batch mixes pointer and keyboard actions. Pure pointer
+  // batches use one compiled Swift invocation; pure keyboard batches use one osascript invocation.
+  if (pointerActions.length === actions.length) {
+    const result = await run("/usr/bin/swift", ["-e", `import CoreGraphics; ${pointerActions.map(swiftForPointerAction).join("; ")}`]);
+    if (result.code !== 0) throw new Error(result.stderr || "pointer action failed");
+    return;
+  }
+  if (keyboardActions.length === actions.length) {
+    const result = await run("/usr/bin/osascript", keyboardActions.flatMap((action) => ["-e", appleScriptForKeyboard(action)]));
+    if (result.code !== 0) throw new Error(result.stderr || "keyboard action failed");
+    return;
+  }
+  for (const action of actions) await runInputActions([action]);
 }
 
 const mouseTool = tool(
@@ -156,9 +177,7 @@ const mouseTool = tool(
   async ({ action, x, y, delta }) => {
     if (platform() !== "darwin") throw new Error("mouse is currently implemented only on macOS");
     if (action !== "scroll" && (x === undefined || y === undefined)) throw new Error(`${action} requires x and y`);
-    const script = action === "scroll" ? appleScriptForInput({ action, delta: delta ?? 0 }) : appleScriptForInput({ action, x: x!, y: y! });
-    const result = await run("/usr/bin/osascript", ["-e", script]);
-    if (result.code !== 0) throw new Error(result.stderr || "mouse action failed");
+    await runInputActions([action === "scroll" ? { action, delta: delta ?? 0 } : { action, x: x!, y: y! }]);
     return `Mouse action completed: ${action}`;
   },
 );
@@ -214,8 +233,8 @@ const keyboardTool = tool(
   async ({ action, text, key, modifiers }) => {
     if (platform() !== "darwin") throw new Error("keyboard is currently implemented only on macOS");
     let script: string;
-    if (action === "type") { if (text === undefined) throw new Error("type requires text"); script = appleScriptForInput({ action, text }); }
-    else { if (!key) throw new Error("key requires key"); script = appleScriptForInput({ action, key, modifiers }); }
+    if (action === "type") { if (text === undefined) throw new Error("type requires text"); script = appleScriptForKeyboard({ action, text }); }
+    else { if (!key) throw new Error("key requires key"); script = appleScriptForKeyboard({ action, key, modifiers }); }
     const result = await run("/usr/bin/osascript", ["-e", script]);
     if (result.code !== 0) throw new Error(result.stderr || "keyboard action failed");
     return `Keyboard action completed: ${action}`;
@@ -236,8 +255,7 @@ const inputSequenceTool = tool(
   z.object({ actions: z.array(inputActionSchema).min(1).max(32) }).strict(),
   async ({ actions }) => {
     if (platform() !== "darwin") throw new Error("input_sequence is currently implemented only on macOS");
-    const result = await run("/usr/bin/osascript", actions.flatMap((action) => ["-e", appleScriptForInput(action as InputAction)]));
-    if (result.code !== 0) throw new Error(result.stderr || "input sequence failed");
+    await runInputActions(actions as InputAction[]);
     return `Input sequence completed: ${actions.length} action(s)`;
   },
 );
