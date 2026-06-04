@@ -9,8 +9,8 @@ export interface PublishedTool {
 
 type LaptopFrame =
   | { type: "hello"; machineName: string; tools: PublishedTool[] }
-  | { type: "result"; id: string; ok: true; content: string }
-  | { type: "result"; id: string; ok: false; error: string }
+  | { type: "result"; id: string; ok: true; content: string; metrics?: { toolExecMs?: number; resultBytes?: number } }
+  | { type: "result"; id: string; ok: false; error: string; metrics?: { toolExecMs?: number; resultBytes?: number } }
   | { type: "ping" }
   | { type: "pong" };
 
@@ -21,6 +21,8 @@ type InternalIdentity = { email: string; sub: string };
 type PendingCall = {
   resolve: (value: ToolResult) => void;
   timer: ReturnType<typeof setTimeout>;
+  tool: string;
+  dispatchedAt: number;
 };
 
 const ARGS_BYTE_LIMIT = 128 * 1024;
@@ -46,9 +48,13 @@ function textResult(text: string, isError = false) {
 
 export class MachineHost extends DurableObject<HostEnv> {
   private readonly pending = new Map<string, PendingCall>();
+  private cachedMachineName?: string;
+  private cachedTools?: PublishedTool[];
 
   private socket() {
-    return this.ctx.getWebSockets("laptop")[0] ?? null;
+    return this.ctx.getWebSockets("laptop")
+      .filter((socket) => socket.readyState === WebSocket.OPEN)
+      .sort((a, b) => ((b.deserializeAttachment() as SocketAttachment | null)?.connectedAt ?? 0) - ((a.deserializeAttachment() as SocketAttachment | null)?.connectedAt ?? 0))[0] ?? null;
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -57,11 +63,8 @@ export class MachineHost extends DurableObject<HostEnv> {
     if (path === "/mcp") return this.mcp(request);
     if (path === "/status") {
       const connected = this.socket() !== null;
-      return Response.json({
-        connected,
-        machineName: connected ? (await this.ctx.storage.get<string>(MACHINE_NAME)) ?? null : null,
-        tools: connected ? (await this.ctx.storage.get<PublishedTool[]>(TOOLS)) ?? [] : [],
-      });
+      const [machineName, tools] = connected ? await Promise.all([this.machineName(), this.tools()]) : [null, []];
+      return Response.json({ connected, machineName, tools });
     }
     return new Response("not found", { status: 404 });
   }
@@ -79,6 +82,9 @@ export class MachineHost extends DurableObject<HostEnv> {
       return new Response("WebSocket upgrade required", { status: 426 });
     }
     const generation = crypto.randomUUID();
+    this.failPending("machine connection replaced during tool call");
+    this.cachedMachineName = undefined;
+    this.cachedTools = undefined;
     for (const socket of this.ctx.getWebSockets("laptop")) {
       try { socket.close(1012, "replaced by a new machine connection"); } catch { /* no-op */ }
     }
@@ -105,6 +111,8 @@ export class MachineHost extends DurableObject<HostEnv> {
         socket.close(1008, "invalid tool catalog");
         return;
       }
+      this.cachedMachineName = frame.machineName;
+      this.cachedTools = frame.tools;
       await this.ctx.storage.put({ [MACHINE_NAME]: frame.machineName, [TOOLS]: frame.tools });
       return;
     }
@@ -117,6 +125,7 @@ export class MachineHost extends DurableObject<HostEnv> {
       if (!pending) return;
       clearTimeout(pending.timer);
       this.pending.delete(frame.id);
+      console.log("machinectl_tool_timing", { tool: pending.tool, roundTripMs: Date.now() - pending.dispatchedAt, toolExecMs: frame.metrics?.toolExecMs ?? null, resultBytes: frame.metrics?.resultBytes ?? (frame.ok ? byteLength(frame.content) : byteLength(frame.error)) });
       if (frame.ok) pending.resolve({ ok: true, content: safeText(frame.content, RESULT_BYTE_LIMIT) });
       else pending.resolve({ ok: false, error: safeText(frame.error, 8_192) });
     }
@@ -126,6 +135,8 @@ export class MachineHost extends DurableObject<HostEnv> {
     const attachment = socket.deserializeAttachment() as SocketAttachment | null;
     const generation = await this.ctx.storage.get<string>(GENERATION);
     if (attachment?.generation !== generation) return;
+    this.cachedMachineName = undefined;
+    this.cachedTools = undefined;
     await this.ctx.storage.delete([GENERATION, MACHINE_NAME, TOOLS]);
     this.failPending("machine disconnected during tool call");
   }
@@ -142,6 +153,9 @@ export class MachineHost extends DurableObject<HostEnv> {
     }
   }
 
+  private async tools(): Promise<PublishedTool[]> { return this.cachedTools ??= (await this.ctx.storage.get<PublishedTool[]>(TOOLS)) ?? []; }
+  private async machineName(): Promise<string | null> { this.cachedMachineName ??= (await this.ctx.storage.get<string>(MACHINE_NAME)) ?? undefined; return this.cachedMachineName ?? null; }
+
   private async mcp(request: Request): Promise<Response> {
     const identity = this.identity(request);
     if (request.method !== "POST") return new Response("POST required", { status: 405 });
@@ -154,7 +168,7 @@ export class MachineHost extends DurableObject<HostEnv> {
     }
     if (body.method === "notifications/initialized") return new Response(null, { status: 204 });
     if (body.method === "ping") return mcpResult(body.id, {});
-    const tools = this.socket() ? (await this.ctx.storage.get<PublishedTool[]>(TOOLS)) ?? [] : [];
+    const tools = this.socket() ? await this.tools() : [];
     if (body.method === "tools/list") return mcpResult(body.id, { tools });
     if (body.method !== "tools/call") return mcpError(body.id, -32601, "method not found");
     const tool = body.params?.name;
@@ -166,7 +180,7 @@ export class MachineHost extends DurableObject<HostEnv> {
       return mcpResult(body.id, textResult("machine busy: too many in-flight calls", true));
     }
     const result = await this.call(tool, args);
-    await this.writeReceipt(identity, tool, args, result).catch((error) => console.error("machinectl_receipt_failed", error));
+    this.ctx.waitUntil(this.writeReceipt(identity, tool, args, result).catch((error) => console.error("machinectl_receipt_failed", error)));
     return mcpResult(body.id, result.ok ? textResult(result.content) : textResult(result.error, true));
   }
 
@@ -179,7 +193,7 @@ export class MachineHost extends DurableObject<HostEnv> {
         this.pending.delete(id);
         resolve({ ok: false, error: "machine tool call timed out" });
       }, CALL_TIMEOUT_MS);
-      this.pending.set(id, { resolve, timer });
+      this.pending.set(id, { resolve, timer, tool, dispatchedAt: Date.now() });
       socket.send(JSON.stringify({ type: "call", id, tool, args }));
     });
   }

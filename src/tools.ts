@@ -11,6 +11,8 @@ const SHELL_TIMEOUT_MS = boundedInt("MACHINECTL_SHELL_TIMEOUT", 60_000, 1_000, 2
 const SHELL_OUTPUT_CAP = 256 * 1024;
 const SHELL_STOP_GRACE_MS = 2_000;
 const SCREENSHOT_MAX_BYTES = boundedInt("MACHINECTL_SCREENSHOT_MAX_BYTES", 8 * 1024 * 1024, 1024, 64 * 1024 * 1024);
+const SCREENSHOT_DEFAULT_MAX_WIDTH = boundedInt("MACHINECTL_SCREENSHOT_DEFAULT_MAX_WIDTH", 1440, 320, 10_000);
+const SCREENSHOT_DEFAULT_QUALITY = boundedInt("MACHINECTL_SCREENSHOT_DEFAULT_QUALITY", 68, 1, 100);
 const LOCAL_AUTH_STATUS_MAX_BYTES = 16 * 1024;
 const LOCAL_AUTH_STATUS_CACHE_MS = 60_000;
 const activeShells = new Set<ReturnType<typeof spawn>>();
@@ -85,25 +87,66 @@ const shellTool = tool(
 
 const screenshotTool = tool(
   "screenshot",
-  "Capture the current screen and return a PNG data URL. May reveal sensitive on-screen information.",
-  { type: "object", properties: {} },
-  z.object({}).strict(),
-  async () => {
-    const path = pathJoin(tmpdir(), `machinectl-${randomUUID()}.png`);
+  "Capture the current screen and return an image data URL. Defaults to a bandwidth-efficient JPEG preview; request format=png and fullResolution=true only when exact pixels are needed. May reveal sensitive on-screen information.",
+  { type: "object", properties: { format: { type: "string", enum: ["jpeg", "png"] }, quality: { type: "number" }, maxWidth: { type: "number" }, fullResolution: { type: "boolean" }, display: { type: "number" }, region: { type: "object", properties: { x: { type: "number" }, y: { type: "number" }, width: { type: "number" }, height: { type: "number" } }, required: ["x", "y", "width", "height"] } } },
+  z.object({ format: z.enum(["jpeg", "png"]).optional().default("jpeg"), quality: z.number().int().min(1).max(100).optional(), maxWidth: z.number().int().min(320).max(10_000).optional(), fullResolution: z.boolean().optional().default(false), display: z.number().int().min(1).max(32).optional(), region: z.object({ x: z.number().int().min(0), y: z.number().int().min(0), width: z.number().int().min(1), height: z.number().int().min(1) }).optional() }).strict(),
+  async (args) => {
+    const { format = "jpeg", quality, maxWidth, fullResolution = false, display, region } = args;
+    const startedAt = Date.now();
+    const ext = format === "jpeg" ? "jpg" : "png";
+    const capturedPath = pathJoin(tmpdir(), `machinectl-${randomUUID()}.png`);
+    const outputPath = pathJoin(tmpdir(), `machinectl-${randomUUID()}.${ext}`);
     try {
       if (platform() === "darwin") {
-        const result = await run("/usr/sbin/screencapture", ["-x", path]);
+        const captureArgs = ["-x", "-t", "png"];
+        if (display !== undefined) captureArgs.push(`-D${display}`);
+        if (region) captureArgs.push(`-R${region.x},${region.y},${region.width},${region.height}`);
+        captureArgs.push(capturedPath);
+        const result = await run("/usr/sbin/screencapture", captureArgs);
         if (result.code !== 0) throw new Error(result.stderr || "screenshot command failed");
+        const targetWidth = fullResolution ? undefined : maxWidth ?? SCREENSHOT_DEFAULT_MAX_WIDTH;
+        if (format !== "png" || targetWidth !== undefined) {
+          const conversionArgs = ["-s", "format", format, ...(format === "jpeg" ? ["-s", "formatOptions", String(quality ?? SCREENSHOT_DEFAULT_QUALITY)] : []), ...(targetWidth ? ["--resampleWidth", String(targetWidth)] : []), capturedPath, "--out", outputPath];
+          const converted = await run("/usr/bin/sips", conversionArgs);
+          if (converted.code !== 0) throw new Error(converted.stderr || "screenshot conversion failed");
+        }
       } else if (platform() === "linux") {
-        const result = await run("bash", ["-lc", `grim ${JSON.stringify(path)} 2>/dev/null || scrot ${JSON.stringify(path)}`]);
+        if (format !== "png" || (!fullResolution && (maxWidth ?? SCREENSHOT_DEFAULT_MAX_WIDTH))) throw new Error("compressed screenshot previews are currently implemented only on macOS; request format=png and fullResolution=true");
+        const result = await run("bash", ["-lc", `grim ${JSON.stringify(capturedPath)} 2>/dev/null || scrot ${JSON.stringify(capturedPath)}`]);
         if (result.code !== 0) throw new Error(result.stderr || "screenshot command failed");
       } else throw new Error(`screenshot is unsupported on ${platform()}`);
-      const bytes = await fsReadFile(path);
+      const finalPath = format === "png" && (fullResolution || platform() !== "darwin") ? capturedPath : outputPath;
+      const bytes = await fsReadFile(finalPath);
       if (bytes.length > SCREENSHOT_MAX_BYTES) throw new Error(`screenshot exceeds ${SCREENSHOT_MAX_BYTES} byte limit`);
-      return `data:image/png;base64,${bytes.toString("base64")}`;
-    } finally { await fsUnlink(path).catch(() => undefined); }
+      const mime = format === "jpeg" ? "image/jpeg" : "image/png";
+      const metadata = { format, bytes: bytes.length, durationMs: Date.now() - startedAt, widthLimited: !fullResolution && (maxWidth ?? SCREENSHOT_DEFAULT_MAX_WIDTH) };
+      if (process.env.MACHINECTL_LOG_TIMING === "1") console.log("[machinectl]", "timing", "screenshot", JSON.stringify(metadata));
+      return `data:${mime};base64,${bytes.toString("base64")}`;
+    } finally {
+      await Promise.all([fsUnlink(capturedPath).catch(() => undefined), fsUnlink(outputPath).catch(() => undefined)]);
+    }
   },
 );
+
+type InputAction =
+  | { action: "move"; x: number; y: number }
+  | { action: "click"; x: number; y: number }
+  | { action: "double_click"; x: number; y: number }
+  | { action: "scroll"; delta: number }
+  | { action: "type"; text: string }
+  | { action: "key"; key: string; modifiers?: Array<"command" | "control" | "option" | "shift"> };
+
+function appleScriptForInput(action: InputAction): string {
+  if (action.action === "move") return `tell application "System Events" to set the position of the mouse to {${action.x}, ${action.y}}`;
+  if (action.action === "click") return `tell application "System Events" to click at {${action.x}, ${action.y}}`;
+  if (action.action === "double_click") return `tell application "System Events" to double click at {${action.x}, ${action.y}}`;
+  if (action.action === "scroll") return `tell application "System Events" to scroll ${action.delta}`;
+  if (action.action === "type") return `tell application "System Events" to keystroke ${JSON.stringify(action.text)}`;
+  const codes: Record<string, number> = { return: 36, enter: 36, tab: 48, escape: 53, space: 49, delete: 51, up: 126, down: 125, left: 123, right: 124 };
+  const modifiers = action.modifiers ?? [];
+  const using = modifiers.length ? ` using {${modifiers.map((modifier) => `${modifier} down`).join(", ")}}` : "";
+  return codes[action.key.toLowerCase()] !== undefined ? `tell application "System Events" to key code ${codes[action.key.toLowerCase()]}${using}` : `tell application "System Events" to keystroke ${JSON.stringify(action.key)}${using}`;
+}
 
 const mouseTool = tool(
   "mouse",
@@ -113,10 +156,7 @@ const mouseTool = tool(
   async ({ action, x, y, delta }) => {
     if (platform() !== "darwin") throw new Error("mouse is currently implemented only on macOS");
     if (action !== "scroll" && (x === undefined || y === undefined)) throw new Error(`${action} requires x and y`);
-    const script = action === "move" ? `tell application "System Events" to set the position of the mouse to {${x}, ${y}}`
-      : action === "click" ? `tell application "System Events" to click at {${x}, ${y}}`
-      : action === "double_click" ? `tell application "System Events" to double click at {${x}, ${y}}`
-      : `tell application "System Events" to scroll ${delta ?? 0}`;
+    const script = action === "scroll" ? appleScriptForInput({ action, delta: delta ?? 0 }) : appleScriptForInput({ action, x: x!, y: y! });
     const result = await run("/usr/bin/osascript", ["-e", script]);
     if (result.code !== 0) throw new Error(result.stderr || "mouse action failed");
     return `Mouse action completed: ${action}`;
@@ -174,16 +214,31 @@ const keyboardTool = tool(
   async ({ action, text, key, modifiers }) => {
     if (platform() !== "darwin") throw new Error("keyboard is currently implemented only on macOS");
     let script: string;
-    if (action === "type") { if (text === undefined) throw new Error("type requires text"); script = `tell application "System Events" to keystroke ${JSON.stringify(text)}`; }
-    else {
-      if (!key) throw new Error("key requires key");
-      const codes: Record<string, number> = { return: 36, enter: 36, tab: 48, escape: 53, space: 49, delete: 51, up: 126, down: 125, left: 123, right: 124 };
-      const using = modifiers.length ? ` using {${modifiers.map((modifier) => `${modifier} down`).join(", ")}}` : "";
-      script = codes[key.toLowerCase()] !== undefined ? `tell application "System Events" to key code ${codes[key.toLowerCase()]}${using}` : `tell application "System Events" to keystroke ${JSON.stringify(key)}${using}`;
-    }
+    if (action === "type") { if (text === undefined) throw new Error("type requires text"); script = appleScriptForInput({ action, text }); }
+    else { if (!key) throw new Error("key requires key"); script = appleScriptForInput({ action, key, modifiers }); }
     const result = await run("/usr/bin/osascript", ["-e", script]);
     if (result.code !== 0) throw new Error(result.stderr || "keyboard action failed");
     return `Keyboard action completed: ${action}`;
+  },
+);
+
+const inputActionSchema = z.discriminatedUnion("action", [
+  z.object({ action: z.enum(["move", "click", "double_click"]), x: z.number().int(), y: z.number().int() }),
+  z.object({ action: z.literal("scroll"), delta: z.number().int() }),
+  z.object({ action: z.literal("type"), text: z.string() }),
+  z.object({ action: z.literal("key"), key: z.string().min(1), modifiers: z.array(z.enum(["command", "control", "option", "shift"])).optional().default([]) }),
+]);
+
+const inputSequenceTool = tool(
+  "input_sequence",
+  "Execute up to 32 mouse/keyboard actions in one local macOS input batch. Text content is sensitive and must not be persisted in audit receipts.",
+  { type: "object", properties: { actions: { type: "array", maxItems: 32, items: { type: "object" } } }, required: ["actions"] },
+  z.object({ actions: z.array(inputActionSchema).min(1).max(32) }).strict(),
+  async ({ actions }) => {
+    if (platform() !== "darwin") throw new Error("input_sequence is currently implemented only on macOS");
+    const result = await run("/usr/bin/osascript", actions.flatMap((action) => ["-e", appleScriptForInput(action as InputAction)]));
+    if (result.code !== 0) throw new Error(result.stderr || "input sequence failed");
+    return `Input sequence completed: ${actions.length} action(s)`;
   },
 );
 
@@ -212,5 +267,5 @@ function run(command: string, args: string[]): Promise<{ code: number | null; st
 }
 
 export function buildToolRegistry(): RegisteredTool[] {
-  return [shellTool, screenshotTool, mouseTool, keyboardTool, localAuthStatusTool, ...buildAgentSessionTools()];
+  return [shellTool, screenshotTool, mouseTool, keyboardTool, inputSequenceTool, localAuthStatusTool, ...buildAgentSessionTools()];
 }

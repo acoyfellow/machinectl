@@ -193,10 +193,12 @@ async function connectOnce(): Promise<void> {
       }
       switch (frame.type) {
         case "call": {
+          const startedAt = Date.now();
           const result = await dispatchCall(frame.tool, frame.args);
+          const durationMs = Date.now() - startedAt;
           const out: LaptopFrame = result.ok
-            ? { type: "result", id: frame.id, ok: true, content: result.content }
-            : { type: "result", id: frame.id, ok: false, error: result.error };
+            ? { type: "result", id: frame.id, ok: true, content: result.content, metrics: { toolExecMs: durationMs, resultBytes: Buffer.byteLength(result.content) } }
+            : { type: "result", id: frame.id, ok: false, error: result.error, metrics: { toolExecMs: durationMs, resultBytes: Buffer.byteLength(result.error) } };
           try {
             ws.send(JSON.stringify(out));
           } catch (err) {
@@ -205,8 +207,8 @@ async function connectOnce(): Promise<void> {
           // Light per-call log so the user can see activity locally.
           log(
             `call ${frame.tool} → ${result.ok ? "ok" : "err"} (${
-              result.ok ? result.content.length + "b" : result.error.slice(0, 60)
-            })`,
+              result.ok ? Buffer.byteLength(result.content) + "b" : result.error.slice(0, 60)
+            }, ${durationMs}ms)`,
           );
           return;
         }

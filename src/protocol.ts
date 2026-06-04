@@ -36,10 +36,15 @@ export interface RegisteredTool<S extends ZodSchema = ZodSchema> {
 // ─── frames ───────────────────────────────────────────────────────────────
 
 /** UP: daemon → Worker. */
+export interface ResultMetrics {
+  toolExecMs: number;
+  resultBytes: number;
+}
+
 export type LaptopFrame =
   | { type: "hello"; machineName: string; tools: PublishedTool[] }
-  | { type: "result"; id: string; ok: true; content: string }
-  | { type: "result"; id: string; ok: false; error: string }
+  | { type: "result"; id: string; ok: true; content: string; metrics?: ResultMetrics }
+  | { type: "result"; id: string; ok: false; error: string; metrics?: ResultMetrics }
   | { type: "pong" };
 
 /** DOWN: Worker → daemon. */

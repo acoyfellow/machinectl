@@ -32,6 +32,7 @@ Edit `wrangler.jsonc`:
 - replace `machinectl.example.com` with your hostname;
 - replace `CF_ACCESS_AUD` with your Access application audience tag;
 - replace `CF_ACCESS_ISS` with your Access team issuer;
+- optionally set `MACHINECTL_LOCATION_HINT` (`wnam`, `enam`, `weur`, `eeur`, `apac`, `oc`, `afr`, `me`, or `sam`) before a user's `MachineHost` is first created, to place the durable bridge near the laptop's usual region. It is best-effort and does not relocate existing objects;
 - optionally replace the `AUDIT_KV` namespace id, or remove the KV binding to disable persistent receipts.
 
 ## 2. Configure Cloudflare Access

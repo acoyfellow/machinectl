@@ -19,6 +19,15 @@ test("receipt summary redacts prompt content while preserving low-risk harness m
   assert.doesNotMatch(JSON.stringify(control), /secret/);
 });
 
+test("receipt summary exposes screenshot tuning but redacts batched input text", () => {
+  const screenshot = summarizeArgs("screenshot", { format: "jpeg", quality: 60, maxWidth: 1280, fullResolution: false });
+  assert.deepEqual(screenshot.safe, { format: "jpeg", quality: 60, maxWidth: 1280, fullResolution: false });
+  const sequence = summarizeArgs("input_sequence", { actions: [{ action: "type", text: "secret" }] });
+  assert.deepEqual(sequence.safe, {});
+  assert.equal(sequence.contentRedacted, true);
+  assert.doesNotMatch(JSON.stringify(sequence), /secret/);
+});
+
 test("tool catalogs are bounded and validate schema-bearing entries", () => {
   assert.equal(validateTools([{ name: "shell", description: "run", inputSchema: { type: "object" } }]), true);
   assert.equal(validateTools([{ name: "bad name!", description: "run", inputSchema: { type: "object" } }]), false);

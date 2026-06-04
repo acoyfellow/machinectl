@@ -28,6 +28,12 @@ export function summarizeArgs(tool: string, args: Record<string, unknown>) {
     ? ["cwd", "timeoutMs"]
     : tool === "mouse"
       ? ["action", "x", "y", "delta"]
+      : tool === "keyboard"
+        ? ["action", "key", "modifiers"]
+        : tool === "screenshot"
+          ? ["format", "quality", "maxWidth", "fullResolution", "display", "region"]
+          : tool === "input_sequence"
+            ? []
       : tool === "harness_start" || tool === "pi_start"
         ? ["harnessId", "cwd", "model", "thinking", "continueRecent"]
         : ["harness_status", "harness_stop", "harness_abort", "harness_control", "pi_status", "pi_stop", "pi_abort", "pi_command"].includes(tool)

@@ -16,7 +16,9 @@
   "vars": {
     // Access Application Audience tag and team issuer for the hostname above.
     "CF_ACCESS_AUD": "replace-with-access-app-audience-tag",
-    "CF_ACCESS_ISS": "https://replace-with-your-team.cloudflareaccess.com"
+    "CF_ACCESS_ISS": "https://replace-with-your-team.cloudflareaccess.com",
+    // Optional for newly created MachineHost objects only: wnam, enam, weur, eeur, apac, oc, afr, me, sam.
+    "MACHINECTL_LOCATION_HINT": "enam"
   },
 
   "durable_objects": {

@@ -16,7 +16,7 @@ Cloudflare Access + Worker relay
         │ outbound WebSocket opened by your laptop
         ▼
 machinectl daemon on your computer
-        ├── shell / screenshot / mouse / keyboard
+        ├── shell / screenshot / mouse / keyboard / input_sequence
         ├── local_auth_status
         └── optional delegated-agent harness sessions
 ```
@@ -30,8 +30,8 @@ No inbound listener on your laptop. No public tunnel to your desktop. When the d
 | Capability | Tool | Examples |
 |---|---|---|
 | Terminal access | `shell` | Files, git, builds, scripts, installed CLIs, clipboard/notifications via platform commands |
-| See the computer | `screenshot` | Capture the current desktop as a PNG |
-| Control the computer | `mouse`, `keyboard` | Move/click/scroll, type text, issue shortcuts |
+| See the computer | `screenshot` | Capture a compressed preview by default, or an exact PNG on request |
+| Control the computer | `mouse`, `keyboard`, `input_sequence` | Move/click/scroll, type text, issue shortcuts, or batch latency-sensitive input |
 | Diagnose local auth | `local_auth_status` | Secret-free, bounded health summary from `cf-local` |
 | Drive delegated agents | `harness_*` (opt-in) | Discover adapters; start, prompt, steer, inspect, abort and stop sessions. Pi is the first adapter. |
 
@@ -39,10 +39,13 @@ No inbound listener on your laptop. No public tunnel to your desktop. When the d
 
 ```text
 shell({ command: "git status --short", cwd: "/Users/me/projects/app" })
-screenshot({})
-mouse({ action: "click", x: 420, y: 300 })
-keyboard({ action: "type", text: "npm test" })
-keyboard({ action: "key", key: "return" })
+screenshot({}) // compressed JPEG preview by default
+screenshot({ format: "png", fullResolution: true }) // exact inspection
+input_sequence({ actions: [
+  { action: "click", x: 420, y: 300 },
+  { action: "type", text: "npm test" },
+  { action: "key", key: "return" }
+] })
 ```
 
 ### Example: delegated-agent harness control
@@ -226,10 +229,13 @@ Runs through `bash -lc` as the daemon user. Output is capped. On timeout or daem
 #### `screenshot`
 
 ```ts
-screenshot({})
+screenshot({})                                           // JPEG preview, max width 1440
+screenshot({ format: "jpeg", quality: 55, maxWidth: 1024 }) // low-bandwidth preview
+screenshot({ format: "png", fullResolution: true })     // exact/full-resolution inspection
+screenshot({ region: { x: 0, y: 0, width: 800, height: 600 } })
 ```
 
-Returns a PNG data URL and deletes its temporary local capture after reading it. Screen contents may be sensitive.
+On macOS, screenshots default to a resized JPEG preview for responsive remote control. Request PNG/full resolution only when exact pixels are necessary. The temporary local capture is deleted after reading. Screen contents may be sensitive.
 
 #### `mouse`
 
@@ -251,6 +257,18 @@ keyboard({ action: "key", key: "c", modifiers: ["command"] })
 ```
 
 Implemented on macOS using System Events and requires user-approved Accessibility permission.
+
+#### `input_sequence`
+
+```ts
+input_sequence({ actions: [
+  { action: "click", x: 400, y: 300 },
+  { action: "type", text: "hello" },
+  { action: "key", key: "return" }
+] })
+```
+
+Runs up to 32 mouse/keyboard actions in one macOS System Events process, reducing round trips and local process-spawn overhead during interactive operation. Typed text remains sensitive and must be redacted by compatible relay audit receipts.
 
 #### `local_auth_status`
 
@@ -300,7 +318,11 @@ That orchestration layer belongs in the authenticated client or relay. The daemo
 | `MACHINECTL_ACCESS_TOKEN` | unset | Explicit token override instead of retrieving an Access token through `cloudflared`. |
 | `MACHINECTL_ALLOWED_PATHS` | empty | Permitted explicit `shell.cwd` roots and optional pi project/session roots. |
 | `MACHINECTL_SHELL_TIMEOUT` | `60000` | Default shell timeout in milliseconds. |
-| `MACHINECTL_SCREENSHOT_MAX_BYTES` | `8388608` | Maximum PNG bytes returned from a screenshot. |
+| `MACHINECTL_SCREENSHOT_MAX_BYTES` | `8388608` | Maximum encoded image bytes returned from a screenshot. |
+| `MACHINECTL_SCREENSHOT_DEFAULT_MAX_WIDTH` | `1440` | Default maximum width for preview screenshots. |
+| `MACHINECTL_SCREENSHOT_DEFAULT_QUALITY` | `68` | Default JPEG quality for preview screenshots. |
+| `MACHINECTL_LOG_TIMING` | unset | Set to `1` to log bounded local screenshot and persisted-session timing diagnostics. |
+| `MACHINECTL_PI_PERSISTED_CACHE_MS` | `10000` | Cache lifetime for explicit persisted Pi-session discovery. |
 | `MACHINECTL_ENABLE_PI` | unset | Set to `1` or `true` to publish the Pi adapter and deprecated `pi_*` aliases. |
 | `MACHINECTL_PI_MAX_SESSIONS` | `4` | Maximum concurrently active pi RPC sessions. |
 | `MACHINECTL_PI_MAX_RUNTIME_MS` | `7200000` | Maximum lifetime of a tracked pi process. |

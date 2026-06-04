@@ -8,7 +8,7 @@ const app = document.querySelector<HTMLDivElement>("#app");
 if (!app) throw new Error("#app missing");
 
 const toolGroups = {
-  core: ["shell", "screenshot", "mouse", "keyboard"],
+  core: ["shell", "screenshot", "mouse", "keyboard", "input_sequence"],
   diagnostic: ["local_auth_status"],
   agents: ["harness_catalog", "harness_start", "harness_list", "harness_status", "harness_prompt", "harness_steer", "harness_control", "harness_stop"],
 };
@@ -21,7 +21,7 @@ function controls() {
 }
 function codePanel() {
   return `<textarea id="code-input" class="code-input" aria-label="Code Mode test">async () => {
-  const shot = await codemode.screenshot({});
+  const shot = await codemode.screenshot({ format: "jpeg", maxWidth: 1280, quality: 65 });
   return shot;
 }</textarea><div class="buttons"><button id="run-code">Execute isolated code</button></div>`;
 }
@@ -58,11 +58,11 @@ function renderStatus() {
 }
 async function refresh() { status = await fetch("/api/status").then((response) => response.json()); renderStatus(); }
 async function present(result: CallResult, imageLabel: string) { if (!output) return; if (!result.ok) { output.textContent = result.error || "Failed"; return; } if (result.content?.startsWith("data:image/") || (result.kind === "image" && result.content)) { if (screen) { screen.src = result.content!; screen.hidden = false; } output.textContent = imageLabel; return; } if (screen) screen.hidden = true; output.textContent = result.content || "(empty result)"; }
-async function call(tool: string, args: Record<string, unknown> = {}) { if (output) output.textContent = "Calling…"; const result = await fetch("/api/call", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ tool, arguments: args }) }).then((response) => response.json()) as CallResult; await present(result, "Screenshot received."); }
+async function call(tool: string, args: Record<string, unknown> = {}) { if (output) output.textContent = "Calling…"; const started = performance.now(); const result = await fetch("/api/call", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ tool, arguments: args }) }).then((response) => response.json()) as CallResult; await present(result, `Screenshot received in ${Math.round(performance.now() - started)} ms.`); }
 $("[data-action=status]")?.addEventListener("click", () => call("local_auth_status"));
-$("[data-action=screenshot]")?.addEventListener("click", () => call("screenshot"));
+$("[data-action=screenshot]")?.addEventListener("click", () => call("screenshot", { format: "jpeg", maxWidth: 1280, quality: 65 }));
 $("#run-shell")?.addEventListener("click", () => call("shell", { command: ($("#shell-command") as HTMLInputElement).value }));
 $("#shell-command")?.addEventListener("keydown", (event) => { if ((event as KeyboardEvent).key === "Enter") $("#run-shell")?.click(); });
-$("#run-code")?.addEventListener("click", async () => { if (output) output.textContent = "Executing…"; const code = ($("#code-input") as HTMLTextAreaElement).value; const result = await fetch("/api/code", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code }) }).then((response) => response.json()) as CallResult; await present(result, "Code Mode screenshot received."); });
-refresh().catch((error) => { if (output) output.textContent = String(error); });
-setInterval(() => refresh().catch(() => undefined), 5000);
+$("#run-code")?.addEventListener("click", async () => { if (output) output.textContent = "Executing…"; const started = performance.now(); const code = ($("#code-input") as HTMLTextAreaElement).value; const result = await fetch("/api/code", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code }) }).then((response) => response.json()) as CallResult; await present(result, `Code Mode screenshot received in ${Math.round(performance.now() - started)} ms.`); });
+async function pollStatus() { try { await refresh(); } finally { window.setTimeout(pollStatus, status.connected ? 15_000 : 1_500); } }
+pollStatus().catch((error) => { if (output) output.textContent = String(error); });

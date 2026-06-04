@@ -91,7 +91,7 @@ export async function handleCodeModeRequest(request: Request, env: CodeModeEnv, 
   const types = typesForCatalog(catalog);
   const exampleTool = catalog.find((tool) => tool.name === "screenshot") ?? catalog[0];
   const example = exampleTool
-    ? `Example: async () => { const r = await codemode.${sanitizeToolName(exampleTool.name)}({}); return r; }`
+    ? `Example: async () => { const r = await codemode.${sanitizeToolName(exampleTool.name)}(${exampleTool.name === "screenshot" ? "{ format: \"jpeg\", maxWidth: 1280, quality: 65 }" : "{}"}); return r; }`
     : "The laptop is offline; no capability methods are currently available.";
   const executor = new DynamicWorkerExecutor({ loader: env.LOADER, globalOutbound: null, timeout: CODE_TIMEOUT_MS });
   const coded = new McpServer({ name: "machinectl-codemode", version: "0.1.0" });

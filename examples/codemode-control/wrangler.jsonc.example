@@ -18,7 +18,9 @@
     "MACHINECTL_ALLOWED_EMAILS": "you@example.com",
     "MACHINECTL_ALLOW_DIRECT_TOOLS": "0",
     "CF_ACCESS_AUD": "replace-with-access-app-audience-tag",
-    "CF_ACCESS_ISS": "https://replace-with-your-team.cloudflareaccess.com"
+    "CF_ACCESS_ISS": "https://replace-with-your-team.cloudflareaccess.com",
+    // Optional for newly created MachineHost objects only: wnam, enam, weur, eeur, apac, oc, afr, me, sam.
+    "MACHINECTL_LOCATION_HINT": "enam"
   },
   "durable_objects": {
     "bindings": [{ "name": "MACHINE_HOST", "class_name": "MachineHost" }]

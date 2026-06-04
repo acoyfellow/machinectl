@@ -11,6 +11,7 @@ interface Env {
   MACHINECTL_DEV_EMAIL?: string;
   MACHINECTL_ALLOWED_EMAILS?: string;
   MACHINECTL_ALLOW_DIRECT_TOOLS?: string;
+  MACHINECTL_LOCATION_HINT?: string;
   MACHINE_HOST: DurableObjectNamespace<MachineHost>;
   AUDIT_KV?: KVNamespace;
   LOADER: WorkerLoader;
@@ -30,7 +31,9 @@ app.get("/health", (c) => c.json({ ok: true, name: "machinectl", codemode: true,
 
 function machineHost(c: Context<AppEnv>) {
   const identity = c.get("identity");
-  return c.env.MACHINE_HOST.get(c.env.MACHINE_HOST.idFromName(identity.email));
+  const id = c.env.MACHINE_HOST.idFromName(identity.email);
+  const locationHint = c.env.MACHINECTL_LOCATION_HINT as "wnam" | "enam" | "sam" | "weur" | "eeur" | "apac" | "oc" | "afr" | "me" | undefined;
+  return c.env.MACHINE_HOST.get(id, locationHint ? { locationHint } : undefined);
 }
 
 function internalRequest(c: Context<AppEnv>, path: string, includeBody = false) {

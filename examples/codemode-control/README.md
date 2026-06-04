@@ -108,5 +108,7 @@ Security posture:
 - normal text results are bounded; screenshot data URLs are accepted only as validated raster data and capped at 12 MB for browser display;
 - optional audit receipts redact shell commands, typed text, prompts, and result content, and KV keys use a hashed operator identifier;
 - production defaults to the Code Mode `/mcp` interface; to deliberately enable equally privileged direct controls for operator debugging, set `MACHINECTL_ALLOW_DIRECT_TOOLS=1`.
+- optionally set `MACHINECTL_LOCATION_HINT` before a user's `MachineHost` is first created to place its durable bridge near the laptop's usual region (`wnam`, `enam`, `weur`, `eeur`, `apac`, `oc`, `afr`, `me`, or `sam`). It is best-effort and does not relocate an existing object.
+- screenshots default to compressed preview-friendly output from current daemons; request `format: "png", fullResolution: true` only when exact pixels are required.
 
 Never host an operator instance publicly or attach a laptop to an unauthenticated deployment.

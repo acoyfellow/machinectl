@@ -5,9 +5,9 @@
 // roots are configured; they are an optional extension of the core laptop
 // capability surface, not required for basic machine control.
 
-import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { access, readFile as fsReadFile, realpath as fsRealpath } from "node:fs/promises";
+import { access, readdir, readFile as fsReadFile, realpath as fsRealpath, stat as fsStat } from "node:fs/promises";
 import { dirname, isAbsolute, resolve as pathResolve } from "node:path";
 import { z } from "zod";
 import type { RegisteredTool, ToolHandler } from "./protocol.js";
@@ -17,6 +17,8 @@ const FINISHED_RETENTION_MS = 24 * 60 * 60 * 1000;
 const MAX_SESSIONS = boundedInt("MACHINECTL_PI_MAX_SESSIONS", 4, 1, 32);
 const SESSION_MAX_RUNTIME_MS = boundedInt("MACHINECTL_PI_MAX_RUNTIME_MS", 2 * 60 * 60 * 1000, 60_000, 24 * 60 * 60 * 1000);
 const STOP_GRACE_MS = boundedInt("MACHINECTL_PI_STOP_GRACE_MS", 5_000, 100, 60_000);
+const PERSISTED_SESSION_CACHE_MS = boundedInt("MACHINECTL_PI_PERSISTED_CACHE_MS", 10_000, 1_000, 60_000);
+const PERSISTED_SCAN_CONCURRENCY = 16;
 const PI_CONTROL_COMMANDS = [
   "get_state", "get_messages", "get_session_stats", "get_last_assistant_text", "get_commands", "get_available_models",
   "set_model", "set_thinking_level", "compact", "set_auto_compaction", "set_auto_retry", "new_session", "switch_session",
@@ -66,6 +68,7 @@ const configuredRoots = (process.env.MACHINECTL_ALLOWED_PATHS || "")
 const hasConfiguredPathRoots = configuredRoots.length > 0;
 const PI_TOOLS_ENABLED = process.env.MACHINECTL_ENABLE_PI === "1" || process.env.MACHINECTL_ENABLE_PI === "true";
 let cachedCanonicalRoots: Promise<string[]> | undefined;
+let persistedSessionCache: { at: number; sessions: PersistedPiSession[] } | undefined;
 
 function boundedInt(envName: string, fallback: number, min: number, max: number): number {
   const parsed = Number.parseInt(process.env[envName] ?? "", 10);
@@ -301,28 +304,57 @@ function processEnv(): NodeJS.ProcessEnv {
   return { ...process.env, PATH: `${nodeBin}:${process.env.PATH ?? ""}`, NO_COLOR: "1", TERM: "dumb" };
 }
 
-function runCommand(command: string, args: string[]): Promise<string> {
-  return new Promise((resolve) => {
-    execFile(command, args, { encoding: "utf-8", maxBuffer: 512 * 1024 }, (err, stdout) => resolve(err ? "" : stdout));
-  });
+async function findSessionFiles(root: string): Promise<string[]> {
+  const files: string[] = [];
+  const pending = [root];
+  while (pending.length) {
+    const directory = pending.pop()!;
+    const entries = await readdir(directory, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      const path = `${directory}/${entry.name}`;
+      if (entry.isDirectory()) pending.push(path);
+      else if (entry.isFile() && entry.name.endsWith(".jsonl")) files.push(path);
+    }
+  }
+  return files;
+}
+
+async function mapBounded<T, R>(values: T[], concurrency: number, worker: (value: T) => Promise<R | undefined>): Promise<R[]> {
+  const output: R[] = [];
+  let cursor = 0;
+  await Promise.all(Array.from({ length: Math.min(concurrency, values.length) }, async () => {
+    while (cursor < values.length) {
+      const value = values[cursor++];
+      const result = await worker(value);
+      if (result !== undefined) output.push(result);
+    }
+  }));
+  return output;
 }
 
 async function findPersistedPiSessions(limit: number): Promise<PersistedPiSession[]> {
+  if (persistedSessionCache && Date.now() - persistedSessionCache.at < PERSISTED_SESSION_CACHE_MS) return persistedSessionCache.sessions.slice(0, limit);
+  const startedAt = Date.now();
   const sessionRoot = process.env.PI_CODING_AGENT_SESSION_DIR ?? `${process.env.HOME ?? ""}/.pi/agent/sessions`;
-  const output = await runCommand("find", [sessionRoot, "-type", "f", "-name", "*.jsonl", "-print"]);
-  const candidates: Array<PersistedPiSession & { modifiedMs: number }> = [];
-  for (const sessionFile of output.split("\n").filter(Boolean)) {
-    const first = await fsReadFile(sessionFile, "utf-8").then((text) => text.split("\n", 1)[0]).catch(() => "");
+  const files = await findSessionFiles(sessionRoot);
+  const candidates = await mapBounded(files, PERSISTED_SCAN_CONCURRENCY, async (sessionFile) => {
+    const [first, info] = await Promise.all([
+      fsReadFile(sessionFile, "utf-8").then((text) => text.split("\n", 1)[0]).catch(() => ""),
+      fsStat(sessionFile).catch(() => undefined),
+    ]);
+    if (!info) return undefined;
     let header: { id?: string; sessionId?: string; cwd?: string; name?: string };
-    try { header = JSON.parse(first) as typeof header; } catch { continue; }
-    if (!header.cwd) continue;
-    try { await requireAllowedPath(header.cwd, "persisted pi session cwd"); } catch { continue; }
-    const modified = await runCommand("stat", ["-f", "%m", sessionFile]);
-    const modifiedMs = (Number.parseInt(modified.trim(), 10) || 0) * 1000;
+    try { header = JSON.parse(first) as typeof header; } catch { return undefined; }
+    if (!header.cwd) return undefined;
+    try { await requireAllowedPath(header.cwd, "persisted pi session cwd"); } catch { return undefined; }
+    const modifiedMs = info.mtimeMs;
     const sessionId = header.id ?? header.sessionId ?? sessionFile.split("_").pop()?.replace(/\.jsonl$/, "") ?? sessionFile;
-    candidates.push({ source: "disk", sessionId, sessionFile, cwd: header.cwd, name: header.name ?? null, modifiedAt: new Date(modifiedMs).toISOString(), modifiedMs });
-  }
-  return candidates.sort((a, b) => b.modifiedMs - a.modifiedMs).slice(0, limit).map(({ modifiedMs: _unused, ...session }) => session);
+    return { source: "disk" as const, sessionId, sessionFile, cwd: header.cwd, name: header.name ?? null, modifiedAt: new Date(modifiedMs).toISOString(), modifiedMs };
+  });
+  const sessions = candidates.sort((a, b) => b.modifiedMs - a.modifiedMs).map(({ modifiedMs: _unused, ...session }) => session);
+  persistedSessionCache = { at: Date.now(), sessions };
+  if (process.env.MACHINECTL_LOG_TIMING === "1") console.log("[machinectl]", "timing", "pi_persisted_scan", JSON.stringify({ files: files.length, sessions: sessions.length, durationMs: Date.now() - startedAt }));
+  return sessions.slice(0, limit);
 }
 
 async function validatePiControlArgs(command: PiControlCommand, args: Record<string, unknown>, session: Session): Promise<Record<string, unknown>> {

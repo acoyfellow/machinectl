@@ -20,7 +20,7 @@ const invokeSource = (name, args) => `import { buildToolRegistry } from './dist/
 function parseRun(source, env) { return JSON.parse(runIsolated(source, env)); }
 
 test("default registry exposes core controls without optional harness tools", () => {
-  assert.deepEqual(parseRun(coreSource), ["shell", "screenshot", "mouse", "keyboard", "local_auth_status"]);
+  assert.deepEqual(parseRun(coreSource), ["shell", "screenshot", "mouse", "keyboard", "input_sequence", "local_auth_status"]);
 });
 
 test("shell validates explicit cwd roots and does not claim shell sandboxing", async () => {
@@ -53,6 +53,22 @@ test("shell rejects a symlink cwd escape", async () => {
     await rm(allowed, { recursive: true, force: true });
     await rm(outside, { recursive: true, force: true });
   }
+});
+
+test("screenshot schema defaults to compressed preview while preserving explicit PNG", () => {
+  const source = `import { buildToolRegistry } from './dist/tools.js'; const t = buildToolRegistry().find(tool => tool.name === 'screenshot'); console.log(JSON.stringify({ preview: t.validator.parse({}), exact: t.validator.parse({ format: 'png', fullResolution: true }) }));`;
+  const values = parseRun(source);
+  assert.equal(values.preview.format, "jpeg");
+  assert.equal(values.preview.fullResolution, false);
+  assert.equal(values.exact.format, "png");
+  assert.equal(values.exact.fullResolution, true);
+});
+
+test("input_sequence batches actions while preserving existing input primitives", () => {
+  const tools = parseRun(coreSource);
+  assert.ok(tools.includes("mouse"));
+  assert.ok(tools.includes("keyboard"));
+  assert.ok(tools.includes("input_sequence"));
 });
 
 test("local auth projection contains only allowlisted bounded diagnostic fields", () => {

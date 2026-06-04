@@ -28,6 +28,13 @@ test("screenshots are returned intact only when valid and bounded", () => {
   assert.deepEqual(sanitizeSuccessResult("screenshot", huge), { ok: false, error: "screenshot response exceeds relay limit" });
 });
 
+test("screenshot optimization metadata is auditable while batched text is redacted", () => {
+  assert.deepEqual(summarizeArgs("screenshot", { format: "jpeg", quality: 60, maxWidth: 1280 }).safe, { format: "jpeg", quality: 60, maxWidth: 1280 });
+  const batched = summarizeArgs("input_sequence", { actions: [{ action: "type", text: "secret" }] });
+  assert.deepEqual(batched.safe, {});
+  assert.doesNotMatch(JSON.stringify(batched), /secret/);
+});
+
 test("catalog validation rejects malformed and excessive tool publications", () => {
   assert.equal(validateTools([{ name: "shell", description: "x", inputSchema: { type: "object" } }]), true);
   assert.equal(validateTools([{ name: "bad tool!", description: "x", inputSchema: {} }]), false);
