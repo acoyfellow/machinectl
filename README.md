@@ -2,6 +2,10 @@
 
 **Control your computer from any device, securely.**
 
+![The thin Code Mode control client connected to a local machine, with terminal proof and delegated-agent controls.](docs/screenshots/codemode-control.png)
+
+The repository includes this thin Code Mode control client for local proof or private deployment behind an Access policy you control. There is no shared hosted demo.
+
 `machinectl` turns a laptop into an authenticated MCP-controlled machine over an outbound WebSocket connection. From a phone or another agent client, you can run shell commands, view and control the desktop, and optionally drive local delegated-agent harness sessions. [`pi`](https://github.com/badlogic/pi-mono) is the first adapter.
 
 ```text
