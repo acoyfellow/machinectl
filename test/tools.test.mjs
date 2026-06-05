@@ -20,7 +20,7 @@ const invokeSource = (name, args) => `import { buildToolRegistry } from './dist/
 function parseRun(source, env) { return JSON.parse(runIsolated(source, env)); }
 
 test("default registry exposes core controls without optional harness tools", () => {
-  assert.deepEqual(parseRun(coreSource), ["shell", "screenshot", "mouse", "keyboard", "input_sequence", "local_auth_status"]);
+  assert.deepEqual(parseRun(coreSource), ["shell", "screenshot", "mouse", "keyboard", "input_sequence", "accessibility_query", "accessibility_action", "local_auth_status"]);
 });
 
 test("shell validates explicit cwd roots and does not claim shell sandboxing", async () => {
@@ -69,6 +69,8 @@ test("input_sequence batches actions while preserving existing input primitives"
   assert.ok(tools.includes("mouse"));
   assert.ok(tools.includes("keyboard"));
   assert.ok(tools.includes("input_sequence"));
+  assert.ok(tools.includes("accessibility_query"));
+  assert.ok(tools.includes("accessibility_action"));
 });
 
 test("local auth projection contains only allowlisted bounded diagnostic fields", () => {

@@ -33,6 +33,9 @@ test("screenshot optimization metadata is auditable while batched text is redact
   const batched = summarizeArgs("input_sequence", { actions: [{ action: "type", text: "secret" }] });
   assert.deepEqual(batched.safe, {});
   assert.doesNotMatch(JSON.stringify(batched), /secret/);
+  const ax = summarizeArgs("accessibility_action", { op: "setValue", elementId: "abc", value: "secret" });
+  assert.deepEqual(ax.safe, { op: "setValue", elementId: "abc" });
+  assert.doesNotMatch(JSON.stringify(ax), /secret/);
 });
 
 test("catalog validation rejects malformed and excessive tool publications", () => {

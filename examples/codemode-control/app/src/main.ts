@@ -8,7 +8,7 @@ const app = document.querySelector<HTMLDivElement>("#app");
 if (!app) throw new Error("#app missing");
 
 const toolGroups = {
-  core: ["shell", "screenshot", "mouse", "keyboard", "input_sequence"],
+  core: ["shell", "screenshot", "mouse", "keyboard", "input_sequence", "accessibility_query", "accessibility_action"],
   diagnostic: ["local_auth_status"],
   agents: ["harness_catalog", "harness_start", "harness_list", "harness_status", "harness_prompt", "harness_steer", "harness_control", "harness_stop"],
 };

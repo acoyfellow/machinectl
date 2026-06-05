@@ -34,6 +34,10 @@ export function summarizeArgs(tool: string, args: Record<string, unknown>) {
           ? ["format", "quality", "maxWidth", "fullResolution", "display", "region"]
           : tool === "input_sequence"
             ? []
+          : tool === "accessibility_query"
+            ? ["op", "app", "window", "role", "depth", "maxNodes", "limit"]
+            : tool === "accessibility_action"
+              ? ["op", "elementId"]
       : tool === "harness_start" || tool === "pi_start"
         ? ["harnessId", "cwd", "model", "thinking", "continueRecent"]
         : ["harness_status", "harness_stop", "harness_abort", "harness_control", "pi_status", "pi_stop", "pi_abort", "pi_command"].includes(tool)

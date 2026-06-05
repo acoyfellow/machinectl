@@ -5,6 +5,7 @@ import { platform, tmpdir } from "node:os";
 import { join as pathJoin, resolve as pathResolve } from "node:path";
 import { z, type ZodSchema } from "zod";
 import { buildAgentSessionTools } from "./agent-sessions.js";
+import { accessibilityAction, accessibilityQuery } from "./accessibility.js";
 import type { RegisteredTool, ToolHandler } from "./protocol.js";
 
 const SHELL_TIMEOUT_MS = boundedInt("MACHINECTL_SHELL_TIMEOUT", 60_000, 1_000, 24 * 60 * 60 * 1000);
@@ -248,6 +249,22 @@ const inputActionSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("key"), key: z.string().min(1), modifiers: z.array(z.enum(["command", "control", "option", "shift"])).optional().default([]) }),
 ]);
 
+const accessibilityQueryTool = tool(
+  "accessibility_query",
+  "Query a bounded macOS accessibility tree. Use snapshot/find/focused/apps/windows to obtain temporary semantic element IDs; do not rely on screenshots when a semantic control is available.",
+  { type: "object", properties: { op: { type: "string", enum: ["snapshot", "find", "focused", "apps", "windows"] }, app: { type: "string" }, window: { type: "string" }, text: { type: "string" }, role: { type: "string" }, depth: { type: "number" }, maxNodes: { type: "number" }, limit: { type: "number" } }, required: ["op"] },
+  z.object({ op: z.enum(["snapshot", "find", "focused", "apps", "windows"]), app: z.string().max(200).optional(), window: z.string().max(200).optional(), text: z.string().max(200).optional(), role: z.string().max(100).optional(), depth: z.number().int().min(0).max(8).optional(), maxNodes: z.number().int().min(1).max(100).optional(), limit: z.number().int().min(1).max(100).optional() }).strict(),
+  async (args) => accessibilityQuery(args),
+);
+
+const accessibilityActionTool = tool(
+  "accessibility_action",
+  "Act on a temporary macOS accessibility element ID returned by accessibility_query. IDs expire quickly and must be rediscovered after app/window changes.",
+  { type: "object", properties: { op: { type: "string", enum: ["activate", "focus", "press", "setValue"] }, elementId: { type: "string" }, value: { type: "string" } }, required: ["op", "elementId"] },
+  z.object({ op: z.enum(["activate", "focus", "press", "setValue"]), elementId: z.string().uuid(), value: z.string().max(10_000).optional() }).strict(),
+  async (args) => accessibilityAction(args),
+);
+
 const inputSequenceTool = tool(
   "input_sequence",
   "Execute up to 32 mouse/keyboard actions in one local macOS input batch. Text content is sensitive and must not be persisted in audit receipts.",
@@ -285,5 +302,5 @@ function run(command: string, args: string[]): Promise<{ code: number | null; st
 }
 
 export function buildToolRegistry(): RegisteredTool[] {
-  return [shellTool, screenshotTool, mouseTool, keyboardTool, inputSequenceTool, localAuthStatusTool, ...buildAgentSessionTools()];
+  return [shellTool, screenshotTool, mouseTool, keyboardTool, inputSequenceTool, accessibilityQueryTool, accessibilityActionTool, localAuthStatusTool, ...buildAgentSessionTools()];
 }

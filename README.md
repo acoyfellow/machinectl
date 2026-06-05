@@ -16,7 +16,7 @@ Cloudflare Access + Worker relay
         │ outbound WebSocket opened by your laptop
         ▼
 machinectl daemon on your computer
-        ├── shell / screenshot / mouse / keyboard / input_sequence
+        ├── shell / screenshot / mouse / keyboard / input_sequence / accessibility_query / accessibility_action
         ├── local_auth_status
         └── optional delegated-agent harness sessions
 ```
@@ -32,6 +32,7 @@ No inbound listener on your laptop. No public tunnel to your desktop. When the d
 | Terminal access | `shell` | Files, git, builds, scripts, installed CLIs, clipboard/notifications via platform commands |
 | See the computer | `screenshot` | Capture a compressed preview by default, or an exact PNG on request |
 | Control the computer | `mouse`, `keyboard`, `input_sequence` | Move/click/scroll, type text, issue shortcuts, or batch latency-sensitive input |
+| Query semantic UI | `accessibility_query`, `accessibility_action` | Find and activate bounded macOS accessibility elements without pixel guessing |
 | Diagnose local auth | `local_auth_status` | Secret-free, bounded health summary from `cf-local` |
 | Drive delegated agents | `harness_*` (opt-in) | Discover adapters; start, prompt, steer, inspect, abort and stop sessions. Pi is the first adapter. |
 
@@ -269,6 +270,15 @@ input_sequence({ actions: [
 ```
 
 Runs up to 32 mouse/keyboard actions in one remote request, reducing round trips during interactive operation. Homogeneous pointer or keyboard batches are executed together locally; mixed batches preserve order. Typed text remains sensitive and must be redacted by compatible relay audit receipts.
+
+#### `accessibility_query` / `accessibility_action`
+
+```ts
+const buttons = accessibility_query({ op: "find", app: "Safari", role: "button", text: "New Tab" })
+accessibility_action({ op: "activate", elementId: buttons.nodes[0].elementId })
+```
+
+These are the small raw primitives behind richer client-side Code Mode UI orchestration. `accessibility_query` returns bounded temporary semantic IDs from the macOS accessibility tree; `accessibility_action` acts only on a recently queried ID. IDs expire quickly and are not stable across app or window changes. Query results are bounded by depth, node count, and text length; callers should prefer semantic controls over screenshot coordinate guessing where available.
 
 #### `local_auth_status`
 

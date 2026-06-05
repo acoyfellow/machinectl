@@ -26,6 +26,9 @@ test("receipt summary exposes screenshot tuning but redacts batched input text",
   assert.deepEqual(sequence.safe, {});
   assert.equal(sequence.contentRedacted, true);
   assert.doesNotMatch(JSON.stringify(sequence), /secret/);
+  const ax = summarizeArgs("accessibility_action", { op: "setValue", elementId: "abc", value: "secret" });
+  assert.deepEqual(ax.safe, { op: "setValue", elementId: "abc" });
+  assert.doesNotMatch(JSON.stringify(ax), /secret/);
 });
 
 test("tool catalogs are bounded and validate schema-bearing entries", () => {
