@@ -35,6 +35,7 @@ No inbound listener on your laptop. No public tunnel to your desktop. When the d
 | Query semantic UI | `accessibility_query`, `accessibility_action` | Find and activate bounded macOS accessibility elements without pixel guessing |
 | Diagnose local auth | `local_auth_status` | Secret-free, bounded health summary from `cf-local` |
 | Drive delegated agents | `harness_*` (opt-in) | Discover adapters; start, prompt, steer, inspect, abort and stop sessions. Pi is the first adapter. |
+| Steer cmux ideas | `cmux_*` (opt-in) | Discover durable workspaces, inspect bounded Pi terminal tails, and safely prompt, steer, abort, or focus a verified Pi-paired surface. |
 
 ### Example: ordinary computer control
 
@@ -295,6 +296,7 @@ Configure allowed roots plus whichever adapters you want to expose before starti
 ```bash
 MACHINECTL_ALLOWED_PATHS="$HOME/projects"
 MACHINECTL_ENABLE_PI=1          # live RPC steering + pi_* compatibility aliases
+MACHINECTL_ENABLE_CMUX=1        # steer existing cmux workspaces/Pi surfaces
 ```
 
 | Tool | Purpose |
@@ -312,6 +314,22 @@ MACHINECTL_ENABLE_PI=1          # live RPC steering + pi_* compatibility aliases
 | `harness_stop` | Stop the process tree while preserving bounded logs in memory. |
 
 Pi is the initial adapter and supports live RPC steering. The existing `pi_*` tools remain as deprecated compatibility aliases. Process handles are retained in daemon memory; a daemon restart loses active handles.
+
+### Existing cmux workspaces
+
+Set `MACHINECTL_ENABLE_CMUX=1` to publish the narrow cmux adapter. It calls the installed `cmux` CLI with fixed argument arrays over cmux's private local Unix socket; the socket is never network-exposed. Run `cmux hooks pi install --yes` once and restart Pi so cmux can pair each surface with its durable Pi session.
+
+| Tool | Purpose |
+|---|---|
+| `cmux_workspace_list` | List workspaces, bounded surface metadata, and paired Pi lifecycle. |
+| `cmux_workspace_status` | Refresh one workspace by its opaque UUID. |
+| `cmux_surface_tail` | Read at most 200 lines from a verified Pi-paired terminal. |
+| `cmux_pi_prompt` | Submit a single-line prompt only when the paired live Pi process is idle. |
+| `cmux_pi_steer` | Submit single-line steering only while the paired Pi process is running. |
+| `cmux_pi_abort` | Send Ctrl-C only to a verified running Pi surface. |
+| `cmux_workspace_focus` | Focus a currently existing workspace on the laptop. |
+
+Mutating tools fail closed when the workspace/surface mapping is stale, ambiguous, not a terminal, not paired by the cmux Pi extension, or no longer owned by a live Pi process. Prompt text and terminal output are content-redacted from relay audit receipts.
 
 ## Code Mode
 
@@ -334,6 +352,10 @@ That orchestration layer belongs in the authenticated client or relay. The daemo
 | `MACHINECTL_LOG_TIMING` | unset | Set to `1` to log bounded local screenshot and persisted-session timing diagnostics. |
 | `MACHINECTL_PI_PERSISTED_CACHE_MS` | `10000` | Cache lifetime for explicit persisted Pi-session discovery. |
 | `MACHINECTL_ENABLE_PI` | unset | Set to `1` or `true` to publish the Pi adapter and deprecated `pi_*` aliases. |
+| `MACHINECTL_ENABLE_CMUX` | unset | Set to `1` or `true` to publish narrow controls for existing cmux/Pi workspaces. |
+| `MACHINECTL_CMUX_BIN` | `cmux` | Explicit cmux CLI path; invoked directly without a shell. |
+| `MACHINECTL_CMUX_PI_SESSION_STORE` | `~/.cmuxterm/pi-hook-sessions.json` | Override the cmux Pi pairing store path, primarily for tests. |
+| `MACHINECTL_CMUX_PASSWORD_FILE` | unset | Read cmux's password-mode socket secret from a local mode-`0600` file for daemon use; the secret is never sent to the relay. |
 | `MACHINECTL_PI_MAX_SESSIONS` | `4` | Maximum concurrently active pi RPC sessions. |
 | `MACHINECTL_PI_MAX_RUNTIME_MS` | `7200000` | Maximum lifetime of a tracked pi process. |
 | `MACHINECTL_PI_STOP_GRACE_MS` | `5000` | Grace period before force-killing a stopped pi process group. |
@@ -346,6 +368,7 @@ An authenticated MCP caller is trusted with your computer:
 - `screenshot` can reveal private visible information;
 - `mouse` and `keyboard` can operate signed-in desktop applications;
 - `harness_*` tools can read and control local delegated-agent session content;
+- opt-in `cmux_*` tools can read bounded Pi terminal output and control only locally verified Pi-paired surfaces;
 - `local_auth_status` exposes only bounded diagnostic metadata, not credentials.
 
 The included relay example:

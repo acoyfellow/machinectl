@@ -6,6 +6,7 @@ import { join as pathJoin, resolve as pathResolve } from "node:path";
 import { z, type ZodSchema } from "zod";
 import { buildAgentSessionTools } from "./agent-sessions.js";
 import { accessibilityAction, accessibilityQuery } from "./accessibility.js";
+import { buildCmuxTools } from "./cmux.js";
 import type { RegisteredTool, ToolHandler } from "./protocol.js";
 
 const SHELL_TIMEOUT_MS = boundedInt("MACHINECTL_SHELL_TIMEOUT", 60_000, 1_000, 24 * 60 * 60 * 1000);
@@ -302,5 +303,5 @@ function run(command: string, args: string[]): Promise<{ code: number | null; st
 }
 
 export function buildToolRegistry(): RegisteredTool[] {
-  return [shellTool, screenshotTool, mouseTool, keyboardTool, inputSequenceTool, accessibilityQueryTool, accessibilityActionTool, localAuthStatusTool, ...buildAgentSessionTools()];
+  return [shellTool, screenshotTool, mouseTool, keyboardTool, inputSequenceTool, accessibilityQueryTool, accessibilityActionTool, localAuthStatusTool, ...buildAgentSessionTools(), ...buildCmuxTools()];
 }
