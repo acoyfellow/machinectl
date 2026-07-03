@@ -122,6 +122,37 @@ async function dispatchCall(
 let shuttingDown = false;
 let currentBackoff = RECONNECT_MIN_MS;
 let connectionStableTimer: NodeJS.Timeout | null = null;
+let reconnectTimer: NodeJS.Timeout | null = null;
+let activeSocket: WebSocket | null = null;
+
+function cancelReconnectTimer() {
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+}
+
+function closeActiveSocket(code = 1001, reason = "machinectl shutting down") {
+  const socket = activeSocket;
+  activeSocket = null;
+  if (!socket) return;
+  try {
+    if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+      socket.close(code, reason);
+    }
+  } catch {
+    try { socket.terminate(); } catch {}
+  }
+}
+
+function requestShutdown(reason: string) {
+  log(`received ${reason}`);
+  shuttingDown = true;
+  cancelReconnectTimer();
+  closeActiveSocket();
+  shutdownTools();
+  shutdownAgentSessions(`machinectl received ${reason}`);
+}
 
 async function connectOnce(): Promise<void> {
   if (!URL_BASE) {
@@ -145,6 +176,7 @@ async function connectOnce(): Promise<void> {
     // 10s handshake timeout — fast failure beats waiting for TCP to give up.
     handshakeTimeout: 10_000,
   });
+  activeSocket = ws;
 
   return await new Promise<void>((resolve, reject) => {
     let resolved = false;
@@ -225,6 +257,7 @@ async function connectOnce(): Promise<void> {
 
     ws.on("close", (code, reason) => {
       clearInterval(pingTimer);
+      if (activeSocket === ws) activeSocket = null;
       if (connectionStableTimer) {
         clearTimeout(connectionStableTimer);
         connectionStableTimer = null;
@@ -251,7 +284,13 @@ async function runForever(): Promise<void> {
     }
     if (shuttingDown) break;
     log(`reconnecting in ${Math.round(currentBackoff / 1000)}s`);
-    await new Promise((r) => setTimeout(r, currentBackoff));
+    await new Promise<void>((resolve) => {
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        resolve();
+      }, currentBackoff);
+    });
+    if (shuttingDown) break;
     currentBackoff = Math.min(currentBackoff * 2, RECONNECT_MAX_MS);
   }
   log("shutting down");
@@ -268,18 +307,8 @@ function banner() {
   }
 }
 
-process.on("SIGINT", () => {
-  log("received SIGINT");
-  shuttingDown = true;
-  shutdownTools();
-  shutdownAgentSessions("machinectl received SIGINT");
-});
-process.on("SIGTERM", () => {
-  log("received SIGTERM");
-  shuttingDown = true;
-  shutdownTools();
-  shutdownAgentSessions("machinectl received SIGTERM");
-});
+process.on("SIGINT", () => requestShutdown("SIGINT"));
+process.on("SIGTERM", () => requestShutdown("SIGTERM"));
 
 banner();
 runForever().catch((err) => {
