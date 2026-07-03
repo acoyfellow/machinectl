@@ -20,7 +20,7 @@ const invokeSource = (name, args) => `import { buildToolRegistry } from './dist/
 function parseRun(source, env) { return JSON.parse(runIsolated(source, env)); }
 
 test("default registry exposes core controls without optional harness tools", () => {
-  assert.deepEqual(parseRun(coreSource), ["shell", "screenshot", "mouse", "keyboard", "input_sequence", "accessibility_query", "accessibility_action", "local_auth_status"]);
+  assert.deepEqual(parseRun(coreSource), ["shell", "screenshot", "screen_record", "mouse", "keyboard", "input_sequence", "accessibility_query", "accessibility_action", "local_auth_status"]);
 });
 
 test("shell validates explicit cwd roots and does not claim shell sandboxing", async () => {
@@ -55,13 +55,22 @@ test("shell rejects a symlink cwd escape", async () => {
   }
 });
 
-test("screenshot schema defaults to compressed preview while preserving explicit PNG", () => {
-  const source = `import { buildToolRegistry } from './dist/tools.js'; const t = buildToolRegistry().find(tool => tool.name === 'screenshot'); console.log(JSON.stringify({ preview: t.validator.parse({}), exact: t.validator.parse({ format: 'png', fullResolution: true }) }));`;
+test("screenshot schema defaults to compressed preview, accepts ratio quality, and preserves explicit PNG", () => {
+  const source = `import { buildToolRegistry } from './dist/tools.js'; const t = buildToolRegistry().find(tool => tool.name === 'screenshot'); console.log(JSON.stringify({ preview: t.validator.parse({}), ratio: t.validator.parse({ quality: 0.7 }), exact: t.validator.parse({ format: 'png', fullResolution: true }) }));`;
   const values = parseRun(source);
   assert.equal(values.preview.format, "jpeg");
   assert.equal(values.preview.fullResolution, false);
+  assert.equal(values.ratio.quality, 70);
   assert.equal(values.exact.format, "png");
   assert.equal(values.exact.fullResolution, true);
+});
+
+test("screen_record publishes a bounded default recording schema", () => {
+  const source = `import { buildToolRegistry } from './dist/tools.js'; const t = buildToolRegistry().find(tool => tool.name === 'screen_record'); console.log(JSON.stringify(t.validator.parse({})));`;
+  const values = parseRun(source);
+  assert.equal(values.durationSec, 3);
+  assert.equal(values.showClicks, false);
+  assert.equal(values.captureAudio, false);
 });
 
 test("input_sequence batches actions while preserving existing input primitives", () => {

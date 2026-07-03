@@ -15,6 +15,7 @@ const SHELL_STOP_GRACE_MS = 2_000;
 const SCREENSHOT_MAX_BYTES = boundedInt("MACHINECTL_SCREENSHOT_MAX_BYTES", 8 * 1024 * 1024, 1024, 64 * 1024 * 1024);
 const SCREENSHOT_DEFAULT_MAX_WIDTH = boundedInt("MACHINECTL_SCREENSHOT_DEFAULT_MAX_WIDTH", 1440, 320, 10_000);
 const SCREENSHOT_DEFAULT_QUALITY = boundedInt("MACHINECTL_SCREENSHOT_DEFAULT_QUALITY", 68, 1, 100);
+const SCREEN_RECORD_MAX_BYTES = boundedInt("MACHINECTL_SCREEN_RECORD_MAX_BYTES", 64 * 1024 * 1024, 1024, 256 * 1024 * 1024);
 const LOCAL_AUTH_STATUS_MAX_BYTES = 16 * 1024;
 const LOCAL_AUTH_STATUS_CACHE_MS = 60_000;
 const activeShells = new Set<ReturnType<typeof spawn>>();
@@ -87,11 +88,19 @@ const shellTool = tool(
   }),
 );
 
+function normalizeImageQuality(quality: number | undefined): number | undefined {
+  if (quality === undefined) return undefined;
+  if (quality > 0 && quality <= 1) return Math.round(quality * 100);
+  return Math.round(quality);
+}
+
+const imageQualitySchema = z.number().positive().max(100).transform(normalizeImageQuality).pipe(z.number().int().min(1).max(100));
+
 const screenshotTool = tool(
   "screenshot",
-  "Capture the current screen and return an image data URL. Defaults to a bandwidth-efficient JPEG preview; request format=png and fullResolution=true only when exact pixels are needed. May reveal sensitive on-screen information.",
-  { type: "object", properties: { format: { type: "string", enum: ["jpeg", "png"] }, quality: { type: "number" }, maxWidth: { type: "number" }, fullResolution: { type: "boolean" }, display: { type: "number" }, region: { type: "object", properties: { x: { type: "number" }, y: { type: "number" }, width: { type: "number" }, height: { type: "number" } }, required: ["x", "y", "width", "height"] } } },
-  z.object({ format: z.enum(["jpeg", "png"]).optional().default("jpeg"), quality: z.number().int().min(1).max(100).optional(), maxWidth: z.number().int().min(320).max(10_000).optional(), fullResolution: z.boolean().optional().default(false), display: z.number().int().min(1).max(32).optional(), region: z.object({ x: z.number().int().min(0), y: z.number().int().min(0), width: z.number().int().min(1), height: z.number().int().min(1) }).optional() }).strict(),
+  "Capture the current screen and return an image data URL. Defaults to a bandwidth-efficient JPEG preview. JPEG quality accepts either 1-100 or a 0-1 ratio such as 0.7. Request format=png and fullResolution=true only when exact pixels are needed. May reveal sensitive on-screen information.",
+  { type: "object", properties: { format: { type: "string", enum: ["jpeg", "png"] }, quality: { type: "number", description: "JPEG quality as 1-100, or 0-1 ratio such as 0.7." }, maxWidth: { type: "number" }, fullResolution: { type: "boolean" }, display: { type: "number" }, region: { type: "object", properties: { x: { type: "number" }, y: { type: "number" }, width: { type: "number" }, height: { type: "number" } }, required: ["x", "y", "width", "height"] } } },
+  z.object({ format: z.enum(["jpeg", "png"]).optional().default("jpeg"), quality: imageQualitySchema.optional(), maxWidth: z.number().int().min(320).max(10_000).optional(), fullResolution: z.boolean().optional().default(false), display: z.number().int().min(1).max(32).optional(), region: z.object({ x: z.number().int().min(0), y: z.number().int().min(0), width: z.number().int().min(1), height: z.number().int().min(1) }).optional() }).strict(),
   async (args) => {
     const { format = "jpeg", quality, maxWidth, fullResolution = false, display, region } = args;
     const startedAt = Date.now();
@@ -126,6 +135,33 @@ const screenshotTool = tool(
       return `data:${mime};base64,${bytes.toString("base64")}`;
     } finally {
       await Promise.all([fsUnlink(capturedPath).catch(() => undefined), fsUnlink(outputPath).catch(() => undefined)]);
+    }
+  },
+);
+
+const screenRecordTool = tool(
+  "screen_record",
+  "Record a short video of the current screen and return a QuickTime video data URL. Defaults to a bounded 3 second silent recording. May reveal sensitive on-screen information.",
+  { type: "object", properties: { durationSec: { type: "number", minimum: 1, maximum: 30 }, display: { type: "number" }, showClicks: { type: "boolean" }, captureAudio: { type: "boolean" } } },
+  z.object({ durationSec: z.number().int().min(1).max(30).optional().default(3), display: z.number().int().min(1).max(32).optional(), showClicks: z.boolean().optional().default(false), captureAudio: z.boolean().optional().default(false) }).strict(),
+  async ({ durationSec, display, showClicks, captureAudio }) => {
+    if (platform() !== "darwin") throw new Error(`screen_record is unsupported on ${platform()}`);
+    const startedAt = Date.now();
+    const outputPath = pathJoin(tmpdir(), `machinectl-${randomUUID()}.mov`);
+    try {
+      const args = ["-x", "-v", `-V${durationSec}`];
+      if (display !== undefined) args.push(`-D${display}`);
+      if (showClicks) args.push("-k");
+      if (captureAudio) args.push("-g");
+      args.push(outputPath);
+      const result = await run("/usr/sbin/screencapture", args);
+      if (result.code !== 0) throw new Error(result.stderr || "screen recording command failed");
+      const bytes = await fsReadFile(outputPath);
+      if (bytes.length > SCREEN_RECORD_MAX_BYTES) throw new Error(`screen recording exceeds ${SCREEN_RECORD_MAX_BYTES} byte limit`);
+      if (process.env.MACHINECTL_LOG_TIMING === "1") console.log("[machinectl]", "timing", "screen_record", JSON.stringify({ bytes: bytes.length, durationMs: Date.now() - startedAt, durationSec }));
+      return `data:video/quicktime;base64,${bytes.toString("base64")}`;
+    } finally {
+      await fsUnlink(outputPath).catch(() => undefined);
     }
   },
 );
@@ -303,5 +339,5 @@ function run(command: string, args: string[]): Promise<{ code: number | null; st
 }
 
 export function buildToolRegistry(): RegisteredTool[] {
-  return [shellTool, screenshotTool, mouseTool, keyboardTool, inputSequenceTool, accessibilityQueryTool, accessibilityActionTool, localAuthStatusTool, ...buildAgentSessionTools(), ...buildCmuxTools()];
+  return [shellTool, screenshotTool, screenRecordTool, mouseTool, keyboardTool, inputSequenceTool, accessibilityQueryTool, accessibilityActionTool, localAuthStatusTool, ...buildAgentSessionTools(), ...buildCmuxTools()];
 }
