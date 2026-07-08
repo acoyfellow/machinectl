@@ -16,6 +16,11 @@ const SCREENSHOT_MAX_BYTES = boundedInt("MACHINECTL_SCREENSHOT_MAX_BYTES", 8 * 1
 const SCREENSHOT_DEFAULT_MAX_WIDTH = boundedInt("MACHINECTL_SCREENSHOT_DEFAULT_MAX_WIDTH", 1440, 320, 10_000);
 const SCREENSHOT_DEFAULT_QUALITY = boundedInt("MACHINECTL_SCREENSHOT_DEFAULT_QUALITY", 68, 1, 100);
 const SCREEN_RECORD_MAX_BYTES = boundedInt("MACHINECTL_SCREEN_RECORD_MAX_BYTES", 64 * 1024 * 1024, 1024, 256 * 1024 * 1024);
+// Grace beyond the requested capture duration before we forcibly TERM/KILL the
+// screencapture child. macOS video capture hangs indefinitely at the locked
+// loginwindow, so without this bound the child leaks as a sleeping orphan.
+const SCREEN_RECORD_GRACE_MS = boundedInt("MACHINECTL_SCREEN_RECORD_GRACE_MS", 8_000, 1_000, 60_000);
+const SCREEN_RECORD_KILL_GRACE_MS = 1_500;
 const LOCAL_AUTH_STATUS_MAX_BYTES = 16 * 1024;
 const LOCAL_AUTH_STATUS_CACHE_MS = 60_000;
 const activeShells = new Set<ReturnType<typeof spawn>>();
@@ -48,6 +53,60 @@ function killTree(child: ReturnType<typeof spawn>, signal: NodeJS.Signals) {
   if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
   if (process.platform === "win32") { try { child.kill(signal); } catch {} return; }
   try { process.kill(-child.pid, signal); } catch { try { child.kill(signal); } catch {} }
+}
+
+/**
+ * Report whether the macOS login session screen is locked. Reads the console
+ * user session dictionary via `ioreg` (no extra dependency, no Quartz/Python)
+ * and returns IOConsoleUsers[0].CGSSessionScreenIsLocked. Fails open (returns
+ * false) if the state cannot be determined so we never block capture on a
+ * detection glitch — the bounded runner is the real safety net.
+ */
+async function macScreenIsLocked(): Promise<boolean> {
+  if (platform() !== "darwin") return false;
+  // Test-only probe override: a shell command whose stdout stands in for the
+  // ioreg plist. Never set in production; the default is the real ioreg read.
+  const probeOverride = process.env.MACHINECTL_SCREEN_LOCK_PROBE;
+  try {
+    const result = probeOverride
+      ? await runBounded("bash", ["-lc", probeOverride], 3_000, 512 * 1024)
+      : await runBounded("/usr/sbin/ioreg", ["-n", "Root", "-d1", "-a"], 3_000, 512 * 1024);
+    if (result.code !== 0 || !result.stdout) return false;
+    // The console-user session dict is emitted as an inline plist. A regex is
+    // sufficient and avoids a plist parser dependency: the key is immediately
+    // followed by its boolean element.
+    const match = /<key>CGSSessionScreenIsLocked<\/key>\s*<(true|false)\s*\/>/.exec(result.stdout);
+    return match ? match[1] === "true" : false;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Run a native capture command with a hard upper bound. On timeout the child
+ * process group is escalated TERM -> (grace) -> KILL so a hung screencapture
+ * (e.g. at the locked loginwindow, where it never exits or writes its .mov)
+ * can never leak as a sleeping orphan. Spawned detached so the whole group is
+ * signalable via -pid.
+ */
+function runCapture(command: string, args: string[], timeoutMs: number): Promise<{ code: number | null; stdout: string; stderr: string; timedOut: boolean }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32" });
+    let stdout = ""; let stderr = ""; let settled = false; let timedOut = false;
+    let killTimer: NodeJS.Timeout | null = null;
+    const finish = (fn: () => void) => { if (settled) return; settled = true; clearTimeout(timeout); if (killTimer) clearTimeout(killTimer); fn(); };
+    child.stdout?.on("data", (data) => { stdout += String(data); });
+    child.stderr?.on("data", (data) => { stderr += String(data); });
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      // Escalate: TERM the group, then KILL if it is still alive after a grace.
+      killTree(child, "SIGTERM");
+      killTimer = setTimeout(() => killTree(child, "SIGKILL"), SCREEN_RECORD_KILL_GRACE_MS);
+      killTimer.unref();
+    }, timeoutMs);
+    child.on("error", (error) => finish(() => reject(error)));
+    child.on("close", (code) => finish(() => resolve({ code, stdout, stderr, timedOut })));
+  });
 }
 
 export function shutdownTools(): void {
@@ -146,6 +205,12 @@ const screenRecordTool = tool(
   z.object({ durationSec: z.number().int().min(1).max(30).optional().default(3), display: z.number().int().min(1).max(32).optional(), showClicks: z.boolean().optional().default(false), captureAudio: z.boolean().optional().default(false) }).strict(),
   async ({ durationSec, display, showClicks, captureAudio }) => {
     if (platform() !== "darwin") throw new Error(`screen_record is unsupported on ${platform()}`);
+    // Preflight: native video capture (screencapture -V) hangs forever at the
+    // locked loginwindow — it never writes the .mov and never exits. Detect the
+    // lock and fail fast with a clear error instead of spawning a doomed child.
+    if (await macScreenIsLocked()) {
+      throw new Error("screen_record is unavailable while the Mac is locked: macOS video capture stalls at the lock screen. Unlock the machine and retry. (screenshot has the same limitation when locked.)");
+    }
     const startedAt = Date.now();
     const outputPath = pathJoin(tmpdir(), `machinectl-${randomUUID()}.mov`);
     try {
@@ -154,9 +219,24 @@ const screenRecordTool = tool(
       if (showClicks) args.push("-k");
       if (captureAudio) args.push("-g");
       args.push(outputPath);
-      const result = await run("/usr/sbin/screencapture", args);
+      // Bounded: allow the full requested duration plus a grace window, then
+      // TERM/KILL the child group so a stall can never leak an orphan.
+      const timeoutMs = durationSec * 1000 + SCREEN_RECORD_GRACE_MS;
+      // Test-only capture-binary override; defaults to the real screencapture.
+      const captureBin = process.env.MACHINECTL_SCREENCAPTURE_BIN || "/usr/sbin/screencapture";
+      const result = await runCapture(captureBin, args, timeoutMs);
+      if (result.timedOut) {
+        // Re-check the lock state: a mid-capture lock is the common cause.
+        const lockedNow = await macScreenIsLocked();
+        throw new Error(lockedNow
+          ? "screen_record timed out because the Mac became locked mid-capture; the hung capture was terminated. Unlock and retry."
+          : `screen_record timed out after ${timeoutMs}ms and was terminated (no video produced). The capture may be blocked by a missing Screen Recording permission or a stalled display session.`);
+      }
       if (result.code !== 0) throw new Error(result.stderr || "screen recording command failed");
-      const bytes = await fsReadFile(outputPath);
+      const bytes = await fsReadFile(outputPath).catch(() => {
+        throw new Error("screen recording produced no output file");
+      });
+      if (bytes.length === 0) throw new Error("screen recording produced an empty file");
       if (bytes.length > SCREEN_RECORD_MAX_BYTES) throw new Error(`screen recording exceeds ${SCREEN_RECORD_MAX_BYTES} byte limit`);
       if (process.env.MACHINECTL_LOG_TIMING === "1") console.log("[machinectl]", "timing", "screen_record", JSON.stringify({ bytes: bytes.length, durationMs: Date.now() - startedAt, durationSec }));
       return `data:video/quicktime;base64,${bytes.toString("base64")}`;

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, realpath, rm, symlink as makeSymlink } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, realpath, rm, symlink as makeSymlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -103,5 +103,122 @@ test("enabled adapters publish honest harness capabilities", async () => {
     assert.ok(result.names.includes("pi_start"), "pi compatibility tools remain published");
   } finally {
     await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+// ── screen_record lock/hang hardening (darwin-only handler) ────────────────
+// These reproduce the BUG REPORT: video capture stalls at the locked
+// loginwindow while the run wrapper lacked a bounded timeout, leaking orphan
+// screencapture processes. We inject a fake capture binary and a fake lock
+// probe (both test-only env seams) so the behavior is deterministic without a
+// real locked session.
+
+const darwinOnly = process.platform === "darwin" ? test : test.skip;
+
+// A fake "screencapture" that hangs forever, writing its own PID to $PIDFILE
+// so the test can assert the child is reaped (no orphan) after the bounded
+// timeout. It ignores TERM to prove the KILL escalation reaps a stubborn child.
+const HANGING_CAPTURE = `#!/bin/bash
+echo $$ > "$PIDFILE"
+trap '' TERM
+while true; do sleep 1; done
+`;
+
+// A fake "screencapture" that writes a tiny valid-enough .mov to the last arg.
+const WORKING_CAPTURE = `#!/bin/bash
+out="\${@: -1}"
+printf 'MOOV-FAKE-VIDEO' > "$out"
+exit 0
+`;
+
+async function writeFakeBin(dir, name, body) {
+  const path = join(dir, name);
+  await writeFile(path, body, "utf8");
+  await chmod(path, 0o755);
+  return path;
+}
+
+function pidAlive(pid) {
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+darwinOnly("screen_record fails fast and spawns nothing while the screen is locked", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "machinectl-lock-"));
+  try {
+    const capture = await writeFakeBin(dir, "screencapture", HANGING_CAPTURE);
+    const result = parseRun(invokeSource("screen_record", { durationSec: 3 }), {
+      // Lock probe reports LOCKED; capture bin points at the hanging fake so we
+      // can prove it is never invoked (a hang would blow the 15s harness cap).
+      MACHINECTL_SCREEN_LOCK_PROBE: 'printf "<key>CGSSessionScreenIsLocked</key><true/>"',
+      MACHINECTL_SCREENCAPTURE_BIN: capture,
+    });
+    assert.equal(result.ok, false, "locked capture must fail");
+    assert.match(result.error, /locked/i, "error must clearly state the machine is locked");
+    assert.doesNotMatch(result.error, /timed out/i, "must fail fast at preflight, not by timeout");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+darwinOnly("screen_record bounds a hung capture, terminates it, and leaves no orphan", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "machinectl-hang-"));
+  const pidFile = join(dir, "capture.pid");
+  try {
+    const capture = await writeFakeBin(dir, "screencapture", HANGING_CAPTURE);
+    const started = Date.now();
+    const output = runIsolated(invokeSource("screen_record", { durationSec: 1 }), {
+      // Unlocked, but the capture binary hangs forever. Bound = 1s + grace.
+      MACHINECTL_SCREEN_LOCK_PROBE: 'printf "<key>CGSSessionScreenIsLocked</key><false/>"',
+      MACHINECTL_SCREENCAPTURE_BIN: capture,
+      MACHINECTL_SCREEN_RECORD_GRACE_MS: "1000",
+      PIDFILE: pidFile,
+    });
+    const elapsed = Date.now() - started;
+    const result = JSON.parse(output);
+    assert.equal(result.ok, false, "a hung capture must surface an error, not hang");
+    assert.match(result.error, /timed out|terminated/i, "error must explain the bounded termination");
+    // 1s duration + 1s grace + <=1.5s kill grace: comfortably under the 15s cap.
+    assert.ok(elapsed < 12_000, `must return promptly after the bound, took ${elapsed}ms`);
+    // The fake wrote its PID; verify that process was reaped (no orphan).
+    const pid = Number((await readFile(pidFile, "utf8")).trim());
+    assert.ok(Number.isInteger(pid) && pid > 0, "fake capture should have recorded its pid");
+    // Give the KILL escalation a moment to land, then confirm the child is gone.
+    await new Promise((r) => setTimeout(r, 2_000));
+    assert.equal(pidAlive(pid), false, `orphan screencapture pid ${pid} must not remain alive`);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+darwinOnly("screen_record returns a video data URL on a successful unlocked capture", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "machinectl-ok-"));
+  try {
+    const capture = await writeFakeBin(dir, "screencapture", WORKING_CAPTURE);
+    const result = parseRun(invokeSource("screen_record", { durationSec: 1 }), {
+      MACHINECTL_SCREEN_LOCK_PROBE: 'printf "<key>CGSSessionScreenIsLocked</key><false/>"',
+      MACHINECTL_SCREENCAPTURE_BIN: capture,
+    });
+    assert.equal(result.ok, true, "unlocked capture with output must succeed");
+    assert.match(result.value, /^data:video\/quicktime;base64,/, "must return a quicktime data URL");
+    const b64 = result.value.split(",")[1];
+    assert.equal(Buffer.from(b64, "base64").toString("utf8"), "MOOV-FAKE-VIDEO", "payload must be the captured bytes");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+darwinOnly("screen_record reports a clear error when capture produces no file", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "machinectl-empty-"));
+  try {
+    // Exits 0 but writes nothing — the classic "hang produced no .mov" tail case.
+    const capture = await writeFakeBin(dir, "screencapture", "#!/bin/bash\nexit 0\n");
+    const result = parseRun(invokeSource("screen_record", { durationSec: 1 }), {
+      MACHINECTL_SCREEN_LOCK_PROBE: 'printf "<key>CGSSessionScreenIsLocked</key><false/>"',
+      MACHINECTL_SCREENCAPTURE_BIN: capture,
+    });
+    assert.equal(result.ok, false);
+    assert.match(result.error, /no output file|empty/i);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 });
