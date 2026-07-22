@@ -60,3 +60,100 @@ test("cmux adapter rejects stale workspace IDs before mutation", async () => {
     assert.match(result.error, /Unknown or stale/);
   } finally { await rm(value.root, { recursive: true, force: true }); }
 });
+
+// A dead pid: spawn a short-lived process, capture its pid, let it exit. Any pid
+// that is not currently a live Pi is "stale" for resolution purposes.
+function deadPid() {
+  // pid 1 is init/launchd — alive but not a Pi, so processIsPi() rejects it via
+  // the command check. That models a stale historical row deterministically.
+  return 1;
+}
+
+// Store fixture: N stale rows on the SAME surface (dead/non-Pi pids) plus one
+// fresh live session (this test process, which /bin/ps reports for the stub).
+async function staleFixture({ freshSessionId, staleCount = 4 }) {
+  const root = await mkdtemp(join(tmpdir(), "machinectl-cmux-stale-"));
+  const binary = join(root, "cmux");
+  const store = join(root, "pi.json");
+  const calls = join(root, "calls.jsonl");
+  // Fake ps: report a Pi command line ONLY for this test process's pid (the
+  // fresh live row); anything else (the stale pid 1) reports a non-Pi command,
+  // so processIsPi() rejects it. Mirrors how the real /bin/ps discriminates.
+  const psBin = join(root, "ps");
+  await writeFile(psBin, `#!/bin/sh
+# argv: -p <pid> -o command=\npid="$2"
+if [ "$pid" = "${process.pid}" ]; then printf '/usr/local/bin/pi\\n'; else printf 'launchd\\n'; fi
+`);
+  await chmod(psBin, 0o700);
+  await writeFile(binary, `#!/bin/sh
+printf '%s\\n' "$*" >> "$MACHINECTL_CMUX_TEST_CALLS"
+case "$*" in
+  *"tree --all"*) cat <<'JSON'
+{"windows":[{"id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","workspaces":[{"id":"${workspaceId}","ref":"workspace:1","title":"Lee","selected":true,"panes":[{"surfaces":[{"id":"${surfaceId}","ref":"surface:1","title":"Pi","type":"terminal","selected":true}]}]}]}]}
+JSON
+  ;;
+  *"read-screen"*) printf 'bounded terminal tail\\n' ;;
+  *) printf '{}\\n' ;;
+esac
+`);
+  await chmod(binary, 0o700);
+  const sessions = {};
+  for (let i = 0; i < staleCount; i++) {
+    const sid = `dead000${i}-0000-4000-8000-00000000000${i}`;
+    // Stale rows carry the SAME surfaceId — the exact repro. Fresher updatedAt
+    // than the live row too, to prove liveness (not recency) is the primary key.
+    sessions[`stale-${i}`] = { sessionId: sid, workspaceId, surfaceId, cwd: "/tmp", pid: deadPid(), runtimeStatus: "idle", agentLifecycle: "idle", lastBody: `stale ${i}`, updatedAt: Date.now() / 1000 + 100 };
+  }
+  sessions["fresh"] = { sessionId: freshSessionId, workspaceId, surfaceId, cwd: "/tmp", pid: process.pid, runtimeStatus: "idle", agentLifecycle: "idle", lastBody: "fresh", updatedAt: Date.now() / 1000 };
+  await writeFile(store, JSON.stringify({ sessions }));
+  return { root, binary, store, calls, psBin };
+}
+
+test("surface-targeted ops resolve to the current live Pi despite many stale rows on the same surface (repro)", async () => {
+  const freshSessionId = "019e4aeb-bfd3-7cb8-82c3-9b8c799f4c6e";
+  const value = await staleFixture({ freshSessionId });
+  try {
+    const env = { MACHINECTL_ENABLE_CMUX: "1", MACHINECTL_CMUX_BIN: value.binary, MACHINECTL_CMUX_PI_SESSION_STORE: value.store, MACHINECTL_CMUX_TEST_CALLS: value.calls, MACHINECTL_CMUX_PS_BIN: value.psBin };
+    // Before the fix this threw "Multiple Pi sessions match; provide surfaceId."
+    const tail = invoke(env, "cmux_surface_tail", { workspaceId, surfaceId, lines: 10 });
+    assert.equal(tail.ok, true, tail.error);
+    assert.equal(tail.value.sessionId, freshSessionId, "tail must target the live session, never a stale row");
+    // prompt resolves to the same live session.
+    const prompt = invoke(env, "cmux_pi_prompt", { workspaceId, surfaceId, message: "hello" });
+    assert.equal(prompt.ok, true, prompt.error);
+    assert.equal(prompt.value.sessionId, freshSessionId);
+  } finally { await rm(value.root, { recursive: true, force: true }); }
+});
+
+test("surface-targeted ops resolve even WITHOUT surfaceId when only one row is live", async () => {
+  const freshSessionId = "019e4aeb-bfd3-7cb8-82c3-9b8c799f4c6e";
+  const value = await staleFixture({ freshSessionId });
+  try {
+    const env = { MACHINECTL_ENABLE_CMUX: "1", MACHINECTL_CMUX_BIN: value.binary, MACHINECTL_CMUX_PI_SESSION_STORE: value.store, MACHINECTL_CMUX_TEST_CALLS: value.calls, MACHINECTL_CMUX_PS_BIN: value.psBin };
+    const tail = invoke(env, "cmux_surface_tail", { workspaceId, lines: 10 });
+    assert.equal(tail.ok, true, tail.error);
+    assert.equal(tail.value.sessionId, freshSessionId);
+  } finally { await rm(value.root, { recursive: true, force: true }); }
+});
+
+test("explicit sessionId selects that live session directly", async () => {
+  const freshSessionId = "019e4aeb-bfd3-7cb8-82c3-9b8c799f4c6e";
+  const value = await staleFixture({ freshSessionId });
+  try {
+    const env = { MACHINECTL_ENABLE_CMUX: "1", MACHINECTL_CMUX_BIN: value.binary, MACHINECTL_CMUX_PI_SESSION_STORE: value.store, MACHINECTL_CMUX_TEST_CALLS: value.calls, MACHINECTL_CMUX_PS_BIN: value.psBin };
+    const tail = invoke(env, "cmux_surface_tail", { workspaceId, surfaceId, sessionId: freshSessionId, lines: 10 });
+    assert.equal(tail.ok, true, tail.error);
+    assert.equal(tail.value.sessionId, freshSessionId);
+  } finally { await rm(value.root, { recursive: true, force: true }); }
+});
+
+test("an explicit sessionId pointing only at stale rows fails closed (never targets a dead session)", async () => {
+  const freshSessionId = "019e4aeb-bfd3-7cb8-82c3-9b8c799f4c6e";
+  const value = await staleFixture({ freshSessionId });
+  try {
+    const env = { MACHINECTL_ENABLE_CMUX: "1", MACHINECTL_CMUX_BIN: value.binary, MACHINECTL_CMUX_PI_SESSION_STORE: value.store, MACHINECTL_CMUX_TEST_CALLS: value.calls, MACHINECTL_CMUX_PS_BIN: value.psBin };
+    const tail = invoke(env, "cmux_surface_tail", { workspaceId, surfaceId, sessionId: "dead0000-0000-4000-8000-000000000000", lines: 10 });
+    assert.equal(tail.ok, false);
+    assert.match(tail.error, /no longer live/);
+  } finally { await rm(value.root, { recursive: true, force: true }); }
+});

@@ -16,6 +16,8 @@ import type { RegisteredTool, ToolHandler } from "./protocol.js";
 const execFileAsync = promisify(execFile);
 const ENABLED = process.env.MACHINECTL_ENABLE_CMUX === "1" || process.env.MACHINECTL_ENABLE_CMUX === "true";
 const CMUX_BIN = process.env.MACHINECTL_CMUX_BIN || "cmux";
+// Injectable like CMUX_BIN so the liveness probe is testable; defaults to /bin/ps.
+const PS_BIN = process.env.MACHINECTL_CMUX_PS_BIN || "/bin/ps";
 const SESSION_STORE = process.env.MACHINECTL_CMUX_PI_SESSION_STORE || join(homedir(), ".cmuxterm", "pi-hook-sessions.json");
 const PASSWORD_FILE = process.env.MACHINECTL_CMUX_PASSWORD_FILE;
 const OUTPUT_CAP = 256 * 1024;
@@ -134,20 +136,53 @@ function publicPiSession(session: PiSession) {
   };
 }
 
-async function requirePairedPi(workspaceId: string, surfaceId?: string): Promise<{ workspace: CmuxWorkspace; surface: CmuxSurface; session: PiSession }> {
+async function requirePairedPi(workspaceId: string, surfaceId?: string, sessionId?: string): Promise<{ workspace: CmuxWorkspace; surface: CmuxSurface; session: PiSession }> {
   const [layout, store] = await Promise.all([tree(), piStore()]);
   const workspace = allWorkspaces(layout).find((candidate) => candidate.id.toLowerCase() === workspaceId.toLowerCase());
   if (!workspace) throw new Error("Unknown or stale cmux workspace ID. List workspaces again.");
   const surfaces = allSurfaces(workspace);
-  const sessions = Object.values(store.sessions ?? {}).filter((session) => session.workspaceId?.toLowerCase() === workspace.id.toLowerCase());
-  const candidates = sessions.filter((session) => surfaces.some((surface) => surface.id.toLowerCase() === session.surfaceId?.toLowerCase()))
-    .filter((session) => !surfaceId || session.surfaceId.toLowerCase() === surfaceId.toLowerCase());
-  if (candidates.length !== 1) throw new Error(candidates.length ? "Multiple Pi sessions match; provide surfaceId." : "No live Pi-paired surface matches this workspace.");
-  const session = candidates[0];
+  // Rows for this workspace whose surface is still present in the live layout,
+  // narrowed by the optional surfaceId / sessionId selectors. The store keeps
+  // one row per Pi session, so a surface that has hosted several Pi processes
+  // over time carries several rows that all share the same surfaceId.
+  const matches = Object.values(store.sessions ?? {})
+    .filter((session) => session.workspaceId?.toLowerCase() === workspace.id.toLowerCase())
+    .filter((session) => surfaces.some((surface) => surface.id.toLowerCase() === session.surfaceId?.toLowerCase()))
+    .filter((session) => !surfaceId || session.surfaceId?.toLowerCase() === surfaceId.toLowerCase())
+    .filter((session) => !sessionId || session.sessionId?.toLowerCase() === sessionId.toLowerCase());
+  if (matches.length === 0) throw new Error("No live Pi-paired surface matches this workspace.");
+  const session = selectCurrentSession(matches, { sessionId, surfaceId });
   const surface = surfaces.find((candidate) => candidate.id.toLowerCase() === session.surfaceId.toLowerCase())!;
   if (surface.type !== "terminal") throw new Error("The paired Pi surface is not a terminal.");
   if (!session.pid || !processIsPi(session.pid)) throw new Error("The recorded Pi process is no longer live. Refresh or resume it locally first.");
   return { workspace, surface, session };
+}
+
+// Resolve a set of matching store rows to the single CURRENT Pi session,
+// deterministically, and never silently choose a stale (dead-process) row.
+//
+// The store accumulates one row per Pi session, so a long-lived terminal surface
+// ends up with many historical rows sharing its surfaceId. Filtering by surfaceId
+// alone therefore still yields several candidates; the discriminator is process
+// liveness: exactly one row's recorded pid is still a live Pi, the rest are dead.
+function selectCurrentSession(matches: PiSession[], opts: { sessionId?: string; surfaceId?: string }): PiSession {
+  if (matches.length === 1) return matches[0];
+  // An explicit sessionId must identify one row on its own; do not fall through
+  // to liveness heuristics that could pick a different session than asked for.
+  if (opts.sessionId) throw new Error("Multiple Pi session rows share that sessionId; refresh the workspace list.");
+  // Drop stale rows: a dead pid fails process.kill(pid, 0) cheaply (no ps spawn),
+  // and a live-but-non-Pi pid fails the command check. What remains is current.
+  const live = matches.filter((session) => session.pid !== undefined && processIsPi(session.pid));
+  if (live.length === 0) throw new Error("The recorded Pi process is no longer live. Refresh or resume it locally first.");
+  if (live.length === 1) return live[0];
+  // More than one genuinely-live Pi remains. If they span different surfaces, the
+  // caller must narrow by surfaceId. If they share one surface, take the freshest
+  // by updatedAt, and refuse to guess on a tie rather than target a stale row.
+  const surfacesInvolved = new Set(live.map((session) => session.surfaceId?.toLowerCase()));
+  if (!opts.surfaceId && surfacesInvolved.size > 1) throw new Error("Multiple live Pi sessions match; provide surfaceId.");
+  const sorted = [...live].sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+  if ((sorted[0].updatedAt ?? 0) === (sorted[1].updatedAt ?? 0)) throw new Error("Multiple live Pi sessions match; provide sessionId to disambiguate.");
+  return sorted[0];
 }
 
 function processIsPi(pid: number): boolean {
@@ -162,12 +197,12 @@ function processIsPi(pid: number): boolean {
 function requireProcessCommand(pid: number): boolean {
   // Synchronous probing closes the race between validation and input as much as
   // practical; cmux still re-validates the surface handle on every command.
-  const command = execFileSync("/bin/ps", ["-p", String(pid), "-o", "command="], { encoding: "utf8", timeout: 2_000 });
+  const command = execFileSync(PS_BIN, ["-p", String(pid), "-o", "command="], { encoding: "utf8", timeout: 2_000 });
   return /(^|\/)pi(?:\s|$)/.test(command.trim()) || /pi-coding-agent/.test(command);
 }
 
-async function sendToPi(workspaceId: string, surfaceId: string | undefined, message: string, mode: "prompt" | "steer") {
-  const { workspace, surface, session } = await requirePairedPi(workspaceId, surfaceId);
+async function sendToPi(workspaceId: string, surfaceId: string | undefined, message: string, mode: "prompt" | "steer", sessionId?: string) {
+  const { workspace, surface, session } = await requirePairedPi(workspaceId, surfaceId, sessionId);
   const lifecycle = session.agentLifecycle ?? "unknown";
   if (mode === "prompt" && lifecycle !== "idle") throw new Error(`Pi must be idle before prompting; current lifecycle is ${lifecycle}.`);
   if (mode === "steer" && lifecycle !== "running") throw new Error(`Pi must be running before steering; current lifecycle is ${lifecycle}.`);
@@ -182,8 +217,8 @@ async function sendToPi(workspaceId: string, surfaceId: string | undefined, mess
   return { ok: true, workspaceId, surfaceId: surface.id, sessionId: session.sessionId, mode };
 }
 
-const targetSchema = { type: "object", properties: { workspaceId: { type: "string", format: "uuid" }, surfaceId: { type: "string", format: "uuid" } }, required: ["workspaceId"] };
-const targetValidator = z.object({ workspaceId: uuid, surfaceId: uuid.optional() }).strict();
+const targetSchema = { type: "object", properties: { workspaceId: { type: "string", format: "uuid" }, surfaceId: { type: "string", format: "uuid" }, sessionId: { type: "string", format: "uuid" } }, required: ["workspaceId"] };
+const targetValidator = z.object({ workspaceId: uuid, surfaceId: uuid.optional(), sessionId: uuid.optional() }).strict();
 
 export function buildCmuxTools(): RegisteredTool[] {
   if (!ENABLED) return [];
@@ -194,15 +229,15 @@ export function buildCmuxTools(): RegisteredTool[] {
       if (!workspace) throw new Error("Unknown or stale cmux workspace ID. List workspaces again.");
       return json({ workspace });
     }),
-    tool("cmux_surface_tail", "Read a bounded terminal tail from a verified Pi-paired cmux surface. Terminal output may contain sensitive content.", { ...targetSchema, properties: { ...targetSchema.properties, lines: { type: "number", minimum: 1, maximum: 200 } } }, targetValidator.extend({ lines: z.number().int().min(1).max(200).optional().default(80) }), async ({ workspaceId, surfaceId, lines }) => {
-      const { workspace, surface, session } = await requirePairedPi(workspaceId, surfaceId);
+    tool("cmux_surface_tail", "Read a bounded terminal tail from a verified Pi-paired cmux surface. Resolves to the current live Pi session for the surface; pass surfaceId and/or sessionId to disambiguate. Terminal output may contain sensitive content.", { ...targetSchema, properties: { ...targetSchema.properties, lines: { type: "number", minimum: 1, maximum: 200 } } }, targetValidator.extend({ lines: z.number().int().min(1).max(200).optional().default(80) }), async ({ workspaceId, surfaceId, sessionId, lines }) => {
+      const { workspace, surface, session } = await requirePairedPi(workspaceId, surfaceId, sessionId);
       const content = await cmux(["read-screen", "--workspace", workspace.ref ?? workspace.id, "--surface", surface.ref ?? surface.id, "--lines", String(lines)]);
       return json({ workspaceId, surfaceId: surface.id, sessionId: session.sessionId, content: content.slice(-OUTPUT_CAP) });
     }),
-    tool("cmux_pi_prompt", "Submit one single-line prompt to an idle, live Pi process paired with a cmux workspace. Fails closed if identity or lifecycle cannot be verified.", { ...targetSchema, properties: { ...targetSchema.properties, message: { type: "string", minLength: 1, maxLength: MAX_MESSAGE_LENGTH } }, required: ["workspaceId", "message"] }, targetValidator.extend({ message: z.string().min(1).max(MAX_MESSAGE_LENGTH) }), async ({ workspaceId, surfaceId, message }) => json(await sendToPi(workspaceId, surfaceId, message, "prompt"))),
-    tool("cmux_pi_steer", "Submit one single-line steering message to a running, live Pi process paired with a cmux workspace.", { ...targetSchema, properties: { ...targetSchema.properties, message: { type: "string", minLength: 1, maxLength: MAX_MESSAGE_LENGTH } }, required: ["workspaceId", "message"] }, targetValidator.extend({ message: z.string().min(1).max(MAX_MESSAGE_LENGTH) }), async ({ workspaceId, surfaceId, message }) => json(await sendToPi(workspaceId, surfaceId, message, "steer"))),
-    tool("cmux_pi_abort", "Send Ctrl-C to a running, verified Pi process paired with a cmux workspace.", targetSchema, targetValidator, async ({ workspaceId, surfaceId }) => {
-      const { workspace, surface, session } = await requirePairedPi(workspaceId, surfaceId);
+    tool("cmux_pi_prompt", "Submit one single-line prompt to an idle, live Pi process paired with a cmux workspace. Resolves to the current live Pi session for the surface; pass surfaceId and/or sessionId to disambiguate. Fails closed if identity or lifecycle cannot be verified.", { ...targetSchema, properties: { ...targetSchema.properties, message: { type: "string", minLength: 1, maxLength: MAX_MESSAGE_LENGTH } }, required: ["workspaceId", "message"] }, targetValidator.extend({ message: z.string().min(1).max(MAX_MESSAGE_LENGTH) }), async ({ workspaceId, surfaceId, sessionId, message }) => json(await sendToPi(workspaceId, surfaceId, message, "prompt", sessionId))),
+    tool("cmux_pi_steer", "Submit one single-line steering message to a running, live Pi process paired with a cmux workspace. Resolves to the current live Pi session for the surface; pass surfaceId and/or sessionId to disambiguate.", { ...targetSchema, properties: { ...targetSchema.properties, message: { type: "string", minLength: 1, maxLength: MAX_MESSAGE_LENGTH } }, required: ["workspaceId", "message"] }, targetValidator.extend({ message: z.string().min(1).max(MAX_MESSAGE_LENGTH) }), async ({ workspaceId, surfaceId, sessionId, message }) => json(await sendToPi(workspaceId, surfaceId, message, "steer", sessionId))),
+    tool("cmux_pi_abort", "Send Ctrl-C to a running, verified Pi process paired with a cmux workspace.", targetSchema, targetValidator, async ({ workspaceId, surfaceId, sessionId }) => {
+      const { workspace, surface, session } = await requirePairedPi(workspaceId, surfaceId, sessionId);
       if (session.agentLifecycle !== "running") throw new Error(`Pi must be running before aborting; current lifecycle is ${session.agentLifecycle ?? "unknown"}.`);
       await cmux(["send-key", "--workspace", workspace.ref ?? workspace.id, "--surface", surface.ref ?? surface.id, "ctrl-c"]);
       return json({ ok: true, workspaceId, surfaceId: surface.id, sessionId: session.sessionId });
