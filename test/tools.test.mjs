@@ -9,7 +9,7 @@ import test from "node:test";
 function runIsolated(source, env = {}) {
   return execFileSync(process.execPath, ["--input-type=module", "--eval", source], {
     cwd: process.cwd(),
-    env: { ...process.env, ...env },
+    env: { ...process.env, MACHINECTL_LOG_TIMING: "", ...env },
     encoding: "utf8",
     timeout: 15_000,
   }).trim();
