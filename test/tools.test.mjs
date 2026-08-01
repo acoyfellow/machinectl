@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { chmod, mkdtemp, readFile, realpath, rm, symlink as makeSymlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { deflateSync } from "node:zlib";
 import test from "node:test";
 
 function runIsolated(source, env = {}) {
@@ -18,6 +19,39 @@ const coreSource = `import { buildToolRegistry } from './dist/tools.js'; console
 const invokeSource = (name, args) => `import { buildToolRegistry } from './dist/tools.js'; const tool = buildToolRegistry().find(t => t.name === ${JSON.stringify(name)}); try { console.log(JSON.stringify({ ok: true, value: await tool.handler(${JSON.stringify(args)}) })); } catch (error) { console.log(JSON.stringify({ ok: false, error: error.message })); }`;
 
 function parseRun(source, env) { return JSON.parse(runIsolated(source, env)); }
+
+function crc32(bytes) {
+  let crc = 0xffffffff;
+  for (const byte of bytes) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function pngChunk(type, data) {
+  const name = Buffer.from(type, "ascii");
+  const chunk = Buffer.alloc(12 + data.length);
+  chunk.writeUInt32BE(data.length, 0);
+  name.copy(chunk, 4);
+  data.copy(chunk, 8);
+  chunk.writeUInt32BE(crc32(Buffer.concat([name, data])), 8 + data.length);
+  return chunk;
+}
+
+function rgbaPng(red, green, blue, alpha = 255) {
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(2, 0);
+  header.writeUInt32BE(2, 4);
+  header.set([8, 6, 0, 0, 0], 8);
+  const row = Buffer.from([0, red, green, blue, alpha, red, green, blue, alpha]);
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk("IHDR", header),
+    pngChunk("IDAT", deflateSync(Buffer.concat([row, row]))),
+    pngChunk("IEND", Buffer.alloc(0)),
+  ]);
+}
 
 test("default registry exposes core controls without optional harness tools", () => {
   assert.deepEqual(parseRun(coreSource), ["shell", "screenshot", "screen_record", "mouse", "keyboard", "input_sequence", "accessibility_query", "accessibility_action", "local_auth_status"]);
@@ -137,6 +171,49 @@ async function writeFakeBin(dir, name, body) {
   await chmod(path, 0o755);
   return path;
 }
+
+const COPYING_SCREENSHOT_CAPTURE = `#!/bin/bash
+out="\${@: -1}"
+cp "$SCREENSHOT_FIXTURE" "$out"
+`;
+
+darwinOnly("screenshot rejects an all-black frame before returning image data", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "machinectl-black-frame-"));
+  try {
+    const fixture = join(dir, "black.png");
+    await writeFile(fixture, rgbaPng(0, 0, 0));
+    const capture = await writeFakeBin(dir, "screencapture", COPYING_SCREENSHOT_CAPTURE);
+    const result = parseRun(invokeSource("screenshot", { format: "png", fullResolution: true }), {
+      MACHINECTL_SCREEN_LOCK_PROBE: 'printf "<key>CGSSessionScreenIsLocked</key><false/>"',
+      MACHINECTL_SCREENSHOT_BIN: capture,
+      SCREENSHOT_FIXTURE: fixture,
+    });
+    assert.equal(result.ok, false);
+    assert.match(result.error, /all-black frame|Screen Recording access/i);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+darwinOnly("screenshot returns a deterministic non-black PNG", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "machinectl-visible-frame-"));
+  try {
+    const fixture = join(dir, "visible.png");
+    const expected = rgbaPng(245, 92, 66);
+    await writeFile(fixture, expected);
+    const capture = await writeFakeBin(dir, "screencapture", COPYING_SCREENSHOT_CAPTURE);
+    const result = parseRun(invokeSource("screenshot", { format: "png", fullResolution: true }), {
+      MACHINECTL_SCREEN_LOCK_PROBE: 'printf "<key>CGSSessionScreenIsLocked</key><false/>"',
+      MACHINECTL_SCREENSHOT_BIN: capture,
+      SCREENSHOT_FIXTURE: fixture,
+    });
+    assert.equal(result.ok, true);
+    assert.match(result.value, /^data:image\/png;base64,/);
+    assert.deepEqual(Buffer.from(result.value.split(",")[1], "base64"), expected);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 function pidAlive(pid) {
   try { process.kill(pid, 0); return true; } catch { return false; }

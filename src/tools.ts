@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { readFile as fsReadFile, realpath as fsRealpath, unlink as fsUnlink } from "node:fs/promises";
 import { platform, tmpdir } from "node:os";
 import { join as pathJoin, resolve as pathResolve } from "node:path";
+import { inflateSync } from "node:zlib";
 import { z, type ZodSchema } from "zod";
 import { buildAgentSessionTools } from "./agent-sessions.js";
 import { accessibilityAction, accessibilityQuery } from "./accessibility.js";
@@ -153,6 +154,88 @@ function normalizeImageQuality(quality: number | undefined): number | undefined 
   return Math.round(quality);
 }
 
+function paethPredictor(left: number, above: number, upperLeft: number): number {
+  const estimate = left + above - upperLeft;
+  const leftDistance = Math.abs(estimate - left);
+  const aboveDistance = Math.abs(estimate - above);
+  const upperLeftDistance = Math.abs(estimate - upperLeft);
+  if (leftDistance <= aboveDistance && leftDistance <= upperLeftDistance) return left;
+  return aboveDistance <= upperLeftDistance ? above : upperLeft;
+}
+
+function pngHasVisibleColor(bytes: Buffer): boolean | null {
+  const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  if (bytes.length < 33 || !bytes.subarray(0, 8).equals(signature)) return null;
+  let width = 0;
+  let height = 0;
+  let bitDepth = 0;
+  let colorType = 0;
+  let interlace = 0;
+  const imageData: Buffer[] = [];
+  for (let offset = 8; offset + 12 <= bytes.length;) {
+    const length = bytes.readUInt32BE(offset);
+    const dataStart = offset + 8;
+    const dataEnd = dataStart + length;
+    if (dataEnd + 4 > bytes.length) return null;
+    const type = bytes.toString("ascii", offset + 4, offset + 8);
+    if (type === "IHDR") {
+      if (length !== 13) return null;
+      width = bytes.readUInt32BE(dataStart);
+      height = bytes.readUInt32BE(dataStart + 4);
+      bitDepth = bytes[dataStart + 8];
+      colorType = bytes[dataStart + 9];
+      interlace = bytes[dataStart + 12];
+    } else if (type === "IDAT") {
+      imageData.push(bytes.subarray(dataStart, dataEnd));
+    } else if (type === "IEND") {
+      break;
+    }
+    offset = dataEnd + 4;
+  }
+  const channels = colorType === 0 ? 1 : colorType === 2 ? 3 : colorType === 4 ? 2 : colorType === 6 ? 4 : 0;
+  if (!width || !height || bitDepth !== 8 || interlace !== 0 || channels === 0 || imageData.length === 0) return null;
+  const stride = width * channels;
+  let inflated: Buffer;
+  try {
+    inflated = inflateSync(Buffer.concat(imageData));
+  } catch {
+    return null;
+  }
+  if (inflated.length !== height * (stride + 1)) return null;
+  let previous = Buffer.alloc(stride);
+  for (let row = 0, offset = 0; row < height; row += 1) {
+    const filter = inflated[offset];
+    offset += 1;
+    if (filter > 4) return null;
+    const current = Buffer.from(inflated.subarray(offset, offset + stride));
+    offset += stride;
+    for (let index = 0; index < stride; index += 1) {
+      const left = index >= channels ? current[index - channels] : 0;
+      const above = previous[index];
+      const upperLeft = index >= channels ? previous[index - channels] : 0;
+      const prediction = filter === 1
+        ? left
+        : filter === 2
+          ? above
+          : filter === 3
+            ? Math.floor((left + above) / 2)
+            : filter === 4
+              ? paethPredictor(left, above, upperLeft)
+              : 0;
+      current[index] = (current[index] + prediction) & 0xff;
+    }
+    for (let index = 0; index < stride; index += channels) {
+      const red = current[index];
+      const green = colorType === 0 || colorType === 4 ? red : current[index + 1];
+      const blue = colorType === 0 || colorType === 4 ? red : current[index + 2];
+      const alpha = colorType === 4 ? current[index + 1] : colorType === 6 ? current[index + 3] : 255;
+      if (alpha > 0 && (red > 0 || green > 0 || blue > 0)) return true;
+    }
+    previous = current;
+  }
+  return false;
+}
+
 const imageQualitySchema = z.number().positive().max(100).transform(normalizeImageQuality).pipe(z.number().int().min(1).max(100));
 
 const screenshotTool = tool(
@@ -168,12 +251,17 @@ const screenshotTool = tool(
     const outputPath = pathJoin(tmpdir(), `machinectl-${randomUUID()}.${ext}`);
     try {
       if (platform() === "darwin") {
+        if (await macScreenIsLocked()) throw new Error("screenshot is unavailable while the Mac is locked. Unlock the machine and retry.");
         const captureArgs = ["-x", "-t", "png"];
         if (display !== undefined) captureArgs.push(`-D${display}`);
         if (region) captureArgs.push(`-R${region.x},${region.y},${region.width},${region.height}`);
         captureArgs.push(capturedPath);
-        const result = await run("/usr/sbin/screencapture", captureArgs);
+        const captureBin = process.env.MACHINECTL_SCREENSHOT_BIN || "/usr/sbin/screencapture";
+        const result = await run(captureBin, captureArgs);
         if (result.code !== 0) throw new Error(result.stderr || "screenshot command failed");
+        const capturedBytes = await fsReadFile(capturedPath).catch(() => { throw new Error("screenshot produced no output file"); });
+        if (capturedBytes.length === 0) throw new Error("screenshot produced an empty file");
+        if (pngHasVisibleColor(capturedBytes) === false) throw new Error("screenshot produced an all-black frame. Grant Screen Recording access to the machinectl Node process in System Settings, restart machinectl, and retry.");
         const targetWidth = fullResolution ? undefined : maxWidth ?? SCREENSHOT_DEFAULT_MAX_WIDTH;
         if (format !== "png" || targetWidth !== undefined) {
           const conversionArgs = ["-s", "format", format, ...(format === "jpeg" ? ["-s", "formatOptions", String(quality ?? SCREENSHOT_DEFAULT_QUALITY)] : []), ...(targetWidth ? ["--resampleWidth", String(targetWidth)] : []), capturedPath, "--out", outputPath];
