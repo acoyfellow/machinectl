@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { RegisteredTool, ToolHandler } from "./protocol.js";
+import { buildAcpAdapters } from "./harness/acp.js";
 import {
   allSessions, hasConfiguredPathRoots, mustGetSession, MAX_SESSIONS, OUTPUT_CAP,
   publicSession, SESSION_MAX_RUNTIME_MS, stopSession, trimFinishedSessions,
@@ -16,6 +17,7 @@ const PI_TOOLS_ENABLED = process.env.MACHINECTL_ENABLE_PI === "1" || process.env
 function resolveAdapters(): HarnessAdapter[] {
   return [
     ...(PI_TOOLS_ENABLED ? [piAdapter] : []),
+    ...buildAcpAdapters(),
   ];
 }
 
