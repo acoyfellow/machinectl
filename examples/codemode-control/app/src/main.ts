@@ -31,10 +31,10 @@ function cards() {
     <article class="card machine"><div class="card-title">Connected machine</div><h2 id="machine-name">Waiting…</h2><div id="caps" class="caps"></div><p class="warning">Authorized access is terminal-and-desktop-equivalent. Code Mode isolates orchestration, not authority.</p></article>
     <article class="card proof"><div class="card-title">Direct proof</div>${controls()}</article>
     <article class="card code"><div class="card-title">Agent-facing default</div><h2>One tool: <code>code</code></h2>${codePanel()}<p>Isolated Dynamic Worker. No ambient outbound network.</p></article>
-    <article class="card pi"><div class="card-title">Delegated agents</div><h2>Live local sessions</h2><p id="harness-copy">Checking…</p><pre class="snippet">harness_start → prompt → steer → status → stop</pre></article>
+    <article class="card pi"><div class="card-title">Delegated agents</div><h2>Codex, Claude, and ~34 more</h2><p id="harness-copy">Checking…</p><div id="agent-pills" class="caps"></div><pre class="snippet">harness_start → prompt → approve → stop</pre><p class="warning">Sessions start in the tightest mode the agent offers. Ask mode holds every risky call until you approve it — from wherever you are.</p></article>
   </section>`;
 }
-app.innerHTML = `<header class="bar"><div class="brand"><span class="mark">⌂</span> machinectl</div><div class="badge" id="status-badge"><span class="dot"></span><span id="status-label">checking</span></div></header><main><section class="hero"><p class="eyebrow">SECURE REMOTE COMPUTER CONTROL</p><h1>Control your computer<br><span>from any device.</span></h1><p class="lead">Your computer connects outbound through Cloudflare Access. Securely use shell, screen, keyboard, mouse, and optional delegated-agent control from your phone, browser, or agent.</p>${endpoint()}</section>${cards()}</main>`;
+app.innerHTML = `<header class="bar"><div class="brand"><span class="mark">⌂</span> machinectl</div><div class="badge" id="status-badge"><span class="dot"></span><span id="status-label">checking</span></div></header><main><section class="hero"><p class="eyebrow">YOUR MACHINE — AND ITS AGENTS — UNDER REMOTE CONTROL</p><h1>Control your computer<br><span>and the agents on it.</span></h1><p class="lead">Your laptop dials out through Cloudflare Access. No inbound port. No tunnel. No hosted middleman. Shell, screen, keyboard and mouse — from your phone. And every coding agent on the machine: start Codex, steer Claude, and approve what they touch before they touch it.</p>${endpoint()}</section>${cards()}</main>`;
 
 const $ = <T extends HTMLElement>(selector: string) => document.querySelector<T>(selector);
 const output = $("#output") as HTMLElement | null;
@@ -48,12 +48,27 @@ $("#copy-mcp")?.addEventListener("click", async () => {
   setTimeout(() => { button.textContent = "Copy MCP URL"; }, 1200);
 });
 function includes(name: string) { return status.tools.some((tool) => tool.name === name); }
+let catalogLoaded = false;
+async function loadAgents() {
+  if (catalogLoaded || !includes("harness_catalog")) return;
+  catalogLoaded = true;
+  try {
+    const result = await fetch("/api/call", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ tool: "harness_catalog", arguments: {} }) }).then((response) => response.json()) as CallResult;
+    if (!result.ok || !result.content) { catalogLoaded = false; return; }
+    const harnesses = (JSON.parse(result.content).harnesses ?? []) as Array<{ id: string; label: string }>;
+    const pills = $("#agent-pills");
+    if (pills) { pills.innerHTML = ""; for (const harness of harnesses) { const pill = document.createElement("span"); pill.className = "pill"; pill.textContent = harness.label || harness.id; pills.appendChild(pill); } }
+    const copy = $("#harness-copy");
+    if (copy) copy.textContent = harnesses.length ? `${harnesses.length} adapter${harnesses.length === 1 ? "" : "s"} live on this machine, right now.` : "No adapters enabled on this machine.";
+  } catch { catalogLoaded = false; }
+}
 function renderStatus() {
   const badge = $("#status-badge"); if (badge) badge.dataset.online = String(status.connected);
   const label = $("#status-label"); if (label) label.textContent = status.connected ? "online" : "offline";
   const name = $("#machine-name"); if (name) name.textContent = status.connected ? status.machineName || "connected" : "offline";
   const caps = $("#caps"); if (caps) { caps.innerHTML = ""; for (const [group, names] of Object.entries(toolGroups)) if (names.some(includes)) { const pill = document.createElement("span"); pill.textContent = group; pill.className = "pill"; caps.appendChild(pill); } }
-  const harness = $("#harness-copy"); if (harness) harness.textContent = includes("harness_start") ? "Enabled · live sessions ready" : "Unavailable";
+  const harness = $("#harness-copy"); if (harness && !catalogLoaded) harness.textContent = includes("harness_catalog") ? "Reading the catalog…" : "Not enabled on this machine.";
+  if (status.connected) void loadAgents();
   document.querySelectorAll<HTMLButtonElement>("button[data-action], #run-shell, #run-code").forEach((element) => { element.disabled = !status.connected; });
 }
 async function refresh() { status = await fetch("/api/status").then((response) => response.json()); renderStatus(); }
