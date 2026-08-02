@@ -1,12 +1,23 @@
 # machinectl
 
-**Control your computer from any device, securely.**
+**Control your computer from a remote location. Control the agents on it too.**
 
-![The thin Code Mode control client connected to a local machine, with terminal proof and delegated-agent controls.](docs/screenshots/codemode-control.png)
+![The Code Mode control client. It is connected to a local machine. It shows the terminal output and the agent controls.](docs/screenshots/codemode-control.png)
 
-The repository includes this thin Code Mode control client for local proof or private deployment behind an Access policy you control. There is no shared hosted demo.
+`machinectl` is a small daemon. It makes your computer an authenticated MCP endpoint. It uses an outbound WebSocket connection. Your computer has no inbound listener. You need no tunnel to your desktop. You need no hosted service.
 
-`machinectl` turns a laptop into an authenticated MCP-controlled machine over an outbound WebSocket connection. From a phone or another agent client, you can run shell commands, view and control the desktop, and optionally drive local delegated-agent harness sessions. [`pi`](https://github.com/badlogic/pi-mono) is the first adapter.
+`machinectl` controls two layers:
+
+| Layer | What you get |
+|---|---|
+| **The machine** | The shell, screen capture, screen recording, the mouse, the keyboard, grouped input, and macOS accessibility. |
+| **The agents on it** | Find, start, prompt, steer, monitor, and stop the local agent sessions. This includes the sessions that already operate in a cmux workspace. |
+
+A remote-desktop tool controls only the first layer. An agent tool does not connect to your computer. `machinectl` controls both layers. You control the agent, and the agent does the work.
+
+[`pi`](https://github.com/badlogic/pi-mono) has its own adapter. One [ACP](https://agentclientprotocol.com) adapter controls the approximately 36 agents that speak the Agent Client Protocol. These agents include Codex, Claude, OpenCode, Gemini, and Amp. To add an agent, write an adapter.
+
+This repository includes a small Code Mode control client. Use it for a local test, or install it behind an Access policy that you control. There is no shared hosted demonstration.
 
 ```text
 phone / MCP client
@@ -21,21 +32,21 @@ machinectl daemon on your computer
         └── optional delegated-agent harness sessions
 ```
 
-No inbound listener on your laptop. No public tunnel to your desktop. When the daemon disconnects, its tools disappear from the relay.
+Your computer has no inbound listener. It has no public tunnel. When the daemon disconnects, the relay removes its tools.
 
-> **Security:** this is intentionally powerful. Anyone allowed to invoke your connected relay can execute commands as your local user and operate your visible desktop. Only run it behind authentication you control and trust.
+> **WARNING: `machinectl` has full control of your computer.** A person who can use your connected relay can run commands as your local user. That person can also operate your desktop. Use `machinectl` only behind authentication that you control.
 
 ## What you can do
 
 | Capability | Tool | Examples |
 |---|---|---|
-| Terminal access | `shell` | Files, git, builds, scripts, installed CLIs, clipboard/notifications via platform commands |
-| See the computer | `screenshot` | Capture a compressed preview by default, or an exact PNG on request |
-| Control the computer | `mouse`, `keyboard`, `input_sequence` | Move/click/scroll, type text, issue shortcuts, or batch latency-sensitive input |
-| Query semantic UI | `accessibility_query`, `accessibility_action` | Find and activate bounded macOS accessibility elements without pixel guessing |
-| Diagnose local auth | `local_auth_status` | Secret-free, bounded health summary from `cf-local` |
-| Drive delegated agents | `harness_*` (opt-in) | Discover adapters; start, prompt, steer, inspect, abort and stop sessions. Pi is the first adapter. |
-| Steer cmux ideas | `cmux_*` (opt-in) | Discover durable workspaces, inspect bounded Pi terminal tails, and safely prompt, steer, abort, or focus a verified Pi-paired surface. |
+| Use the terminal | `shell` | Files, git, builds, scripts, and installed CLI programs. Use platform commands for the clipboard and for notifications. |
+| See the computer | `screenshot` | Capture a compressed preview. To get an exact image, request the PNG format. |
+| Control the computer | `mouse`, `keyboard`, `input_sequence` | Move, click, and scroll. Type text. Send shortcuts. Send a group of inputs when the delay must be small. |
+| Examine the user interface | `accessibility_query`, `accessibility_action` | Find and operate macOS accessibility elements. You do not calculate pixel coordinates. |
+| Examine the local login | `local_auth_status` | A short health summary from `cf-local`. It contains no secrets. |
+| Control delegated agents | `harness_*` (optional) | Find the adapters. Start, prompt, control, monitor, stop, and end a session. Use the Pi adapter or any ACP agent. |
+| Control cmux workspaces | `cmux_*` (optional) | Find the permanent workspaces. Read the recent Pi terminal output. Prompt, steer, stop, or select a Pi surface after machinectl verifies it. |
 
 ### Example: ordinary computer control
 
@@ -61,33 +72,43 @@ harness_control({ harnessId: "pi", id: "<session-id>", command: "get_last_assist
 harness_stop({ harnessId: "pi", id: "<session-id>" })
 ```
 
+The same operations control any ACP agent. In this example, Codex starts in `read-only` mode. It requests permission before it writes a file. It then waits for your decision. You can send the decision from a remote location.
+
+```text
+harness_start({ harnessId: "codex", cwd: "/Users/me/projects/app" })
+harness_prompt({ id: "<session-id>", message: "Add a regression test for the parser bug." })
+harness_control({ id: "<session-id>", command: "pending_permissions" })
+harness_control({ id: "<session-id>", command: "resolve_permission",
+                  args: { requestId: "perm-1", optionId: "allow_once" } })
+```
+
 ## Why this is different
 
-`machinectl` is not a cloud sandbox, a Screen Sharing server, or a desktop assistant app. It is an authenticated outbound control channel to a **real user-owned computer**:
+`machinectl` is not a cloud sandbox. It is not a Screen Sharing server. It is not a desktop assistant application. It is an authenticated outbound control channel to a **computer that you own**:
 
-- unlike sandbox computer-use systems, it reaches the apps, files and sessions already on your laptop;
-- unlike remote desktop/VNC, it does not require exposing an inbound desktop service;
-- unlike local automation CLIs, it makes those capabilities reachable from another authenticated device or agent;
-- unlike a desktop companion, it stays deliberately small: transport, machine capabilities and delegated-agent adapters.
+- A sandbox system has its own files. `machinectl` uses the applications, the files, and the sessions on your computer.
+- A remote desktop program needs an inbound service. `machinectl` needs no inbound service.
+- A local automation program operates only on one computer. `machinectl` makes these capabilities available to a different authenticated device or agent.
+- A desktop assistant has many functions. `machinectl` stays small. It has the transport, the machine capabilities, and the agent adapters.
 
 ## Built with Cloudflare
 
-The reference architecture demonstrates a Cloudflare-native device-connector pattern:
+The reference architecture shows a Cloudflare device-connector pattern:
 
 | Primitive | Role |
 |---|---|
-| Cloudflare Access | Authenticates the human or agent allowed to reach a high-authority private device. |
+| Cloudflare Access | Authenticates the user or the agent that can connect to a private device with high permissions. |
 | Workers | Hosts the MCP relay endpoint and policy boundary. |
-| Durable Objects | Routes one live outbound-connected laptop per authenticated identity. |
-| WebSocket Hibernation | Keeps the long-lived device channel economical. |
-| KV, optional | Stores content-minimizing audit receipts without command output content. |
-| Code Mode / Dynamic Workers | An adopting client can orchestrate the compact machine tool surface through isolated generated code. |
+| Durable Objects | Sends each message to the one connected computer for each authenticated identity. |
+| WebSocket Hibernation | Decreases the cost of the permanent device channel. |
+| KV, optional | Stores short audit records. The records contain no command output. |
+| Code Mode and Dynamic Workers | A client can control the small machine tool surface with generated code in an isolated environment. |
 
-The deployed dogfood client uses Code Mode as its preferred model-facing interface. This repository also ships a thin Code Mode control client example for local proof or private deployment; the raw relay example remains available when you want the smallest inspectable MCP bridge.
+The installed client uses Code Mode as its primary interface to the model. This repository also includes a small Code Mode control client example. Use it for a local test or for a private installation. The basic relay example is also available. Use that example when you want the smallest MCP bridge that you can examine.
 
 ## Architecture
 
-`machinectl` is the **laptop daemon**. A remote caller needs a compatible authenticated relay. This repository includes a deployable Cloudflare Worker relay reference in [`examples/cloudflare-worker-relay`](./examples/cloudflare-worker-relay/).
+`machinectl` is the **daemon on your computer**. A remote caller needs a compatible authenticated relay. This repository includes a Cloudflare Worker relay that you can install. Refer to [`examples/cloudflare-worker-relay`](./examples/cloudflare-worker-relay/).
 
 ```text
 ┌──────────────────────────────┐
@@ -106,9 +127,9 @@ The deployed dogfood client uses Code Mode as its preferred model-facing interfa
 └──────────────────────────────┘
 ```
 
-The relay is deliberately separate from the daemon: you can use the included Cloudflare implementation or provide another compatible authenticated endpoint implementing the wire protocol in [`src/protocol.ts`](./src/protocol.ts).
+The relay is separate from the daemon. Use the supplied Cloudflare implementation, or supply a different authenticated endpoint. A different endpoint must use the wire protocol in [`src/protocol.ts`](./src/protocol.ts).
 
-Two client/relay examples are included:
+This repository includes two examples of a client and a relay:
 
 | Example | Use it for |
 |---|---|
@@ -120,7 +141,7 @@ Two client/relay examples are included:
 ### Requirements
 
 - Node.js 20+
-- macOS for the full screen/mouse/keyboard experience
+- macOS, for all screen, mouse, and keyboard functions
   - shell and screenshot have limited Linux support
 - A trusted compatible Worker relay
   - the included Cloudflare Worker example requires a Cloudflare account, hostname and Access application
@@ -148,9 +169,9 @@ cp wrangler.jsonc.example wrangler.jsonc
 
 Edit `wrangler.jsonc` with:
 
-- a hostname you control, for example `machinectl.example.com`;
-- your Cloudflare Access application audience tag;
-- your Access team issuer;
+- A hostname that you control, for example `machinectl.example.com`.
+- The audience tag of your Cloudflare Access application.
+- The issuer of your Access team.
 - optionally, a KV namespace for content-minimizing audit receipts.
 
 Deploy it:
@@ -226,7 +247,7 @@ shell({
 
 Runs through `bash -lc` as the daemon user. Output is capped. On timeout or daemon shutdown, machinectl terminates the shell process group.
 
-`MACHINECTL_ALLOWED_PATHS` limits only an explicit `cwd`; it does **not** sandbox shell command contents.
+`MACHINECTL_ALLOWED_PATHS` limits only an explicit `cwd`. It does **not** put the shell command in a sandbox.
 
 #### `screenshot`
 
@@ -270,16 +291,16 @@ input_sequence({ actions: [
 ] })
 ```
 
-Runs up to 32 mouse/keyboard actions in one remote request, reducing round trips during interactive operation. Homogeneous pointer or keyboard batches are executed together locally; mixed batches preserve order. Typed text remains sensitive and must be redacted by compatible relay audit receipts.
+This tool does a maximum of 32 mouse actions and keyboard actions in one remote request. It thus decreases the number of messages during interactive work. machinectl does a group of pointer actions together. It also does a group of keyboard actions together. When a group contains both types, machinectl keeps the given sequence. Typed text is sensitive. A compatible relay must remove it from the audit records.
 
-#### `accessibility_query` / `accessibility_action`
+#### `accessibility_query` and `accessibility_action`
 
 ```ts
 const buttons = accessibility_query({ op: "find", app: "Safari", role: "button", text: "New Tab" })
 accessibility_action({ op: "activate", elementId: buttons.nodes[0].elementId })
 ```
 
-These are the small raw primitives behind richer client-side Code Mode UI orchestration. `accessibility_query` returns bounded temporary semantic IDs from the macOS accessibility tree; `accessibility_action` acts only on a recently queried ID. IDs expire quickly and are not stable across app or window changes. Query results are bounded by depth, node count, and text length; callers should prefer semantic controls over screenshot coordinate guessing where available.
+These are the basic tools for a Code Mode client that controls the user interface. `accessibility_query` returns temporary identifiers from the macOS accessibility tree. `accessibility_action` operates only on an identifier from a recent query. An identifier expires quickly. It also changes when the application or the window changes. machinectl limits the depth, the node count, and the text length of a query result. Use an accessibility element when one is available. Do not calculate coordinates from a screenshot.
 
 #### `local_auth_status`
 
@@ -291,33 +312,89 @@ Returns a bounded allowlisted projection from `cf-local status --json --remote`.
 
 ### Optional delegated-agent harness tools
 
-Configure allowed roots plus whichever adapters you want to expose before starting the daemon:
+Set the permitted directories and the adapters before you start the daemon:
 
 ```bash
 MACHINECTL_ALLOWED_PATHS="$HOME/projects"
 MACHINECTL_ENABLE_PI=1          # live RPC steering + pi_* compatibility aliases
+MACHINECTL_ENABLE_ACP=1         # any Agent Client Protocol agent (refer to below)
 MACHINECTL_ENABLE_CMUX=1        # steer existing cmux workspaces/Pi surfaces
 ```
 
 | Tool | Purpose |
 |---|---|
-| `harness_catalog` | List available adapters and honest capabilities. |
-| `harness_start` | Start a delegated-agent session. |
-| `harness_list` | List active/recent tracked sessions. |
-| `harness_status` | Read normalized status and recent events. |
-| `harness_logs` | Read bounded process output. |
+| `harness_catalog` | List the available adapters and their capabilities. |
+| `harness_start` | Start a session with a delegated agent. |
+| `harness_list` | List the active sessions and the recent sessions. |
+| `harness_status` | Read the status and the recent events. |
+| `harness_logs` | Read a limited quantity of the process output. |
 | `harness_prompt` | Send a prompt. |
-| `harness_steer` | Steer work when supported. |
-| `harness_follow_up` | Queue subsequent work when supported. |
-| `harness_control` | Issue an allowlisted adapter-specific command. |
-| `harness_abort` | Abort current work. |
-| `harness_stop` | Stop the process tree while preserving bounded logs in memory. |
+| `harness_steer` | Change the work while the agent operates, if the adapter has this capability. |
+| `harness_follow_up` | Add subsequent work, if the adapter has this capability. |
+| `harness_control` | Send a permitted command to the adapter. |
+| `harness_abort` | Stop the current work. |
+| `harness_stop` | Stop the processes. machinectl keeps the recorded output in memory. |
 
-Pi is the initial adapter and supports live RPC steering. The existing `pi_*` tools remain as deprecated compatibility aliases. Process handles are retained in daemon memory; a daemon restart loses active handles.
+Pi is the native adapter. It has all control operations. The `pi_*` tools stay available for older clients, but do not use them in new work. The daemon keeps the process data in memory. When the daemon starts again, it loses the active sessions.
+
+To add an agent, write an adapter. Do not add a tool. The tool table above is the stable interface. Each adapter uses the [`HarnessAdapter`](src/harness/types.ts) interface. Each adapter declares only the capabilities that it has. `harness_steer` thus refuses the operation for an adapter that has no steer method.
+
+### Agent Client Protocol (ACP) agents
+
+[ACP](https://agentclientprotocol.com) is JSON-RPC on stdio. It uses the same transport as Pi. Approximately 36 coding agents speak ACP. One adapter controls all of them. To add an agent, add a launch configuration. You do not write new code.
+
+```bash
+MACHINECTL_ENABLE_ACP=1
+MACHINECTL_ACP_AGENTS=codex,claude,opencode      # the default is opencode
+MACHINECTL_ACP_COMMAND_CODEX="/path/to/codex-acp" # optional: the command for one agent
+```
+
+machinectl has launch configurations for `opencode`, `claude`, `codex`, `amp`, and `gemini`. To use a different agent, set `MACHINECTL_ACP_COMMAND_<ID>`. machinectl reads the capabilities from the `initialize` reply of the agent. It does not use a fixed list. `harness_catalog` thus shows the capabilities that each agent has.
+
+These results come from tests with real agents:
+
+| Agent | Package | Session modes | Resume | Control |
+|---|---|---|---|---|
+| Codex | `@agentclientprotocol/codex-acp` | `read-only`, `agent`, `agent-full-access` | yes | machinectl sets the mode |
+| Claude Agent | `@agentclientprotocol/claude-agent-acp` | `plan`, `default`, `acceptEdits`, and more | yes | machinectl sets the mode |
+| OpenCode | native (`opencode acp`) | none | yes | the agent decides |
+| Amp | `amp-acp` | none | no | the agent decides |
+
+`claude-agent-acp` needs its own credentials in the environment. A `claude` CLI that has a login is not sufficient. machinectl reports this error with the authentication methods of the agent.
+
+#### The limits of machinectl control
+
+A session starts in the mode that has the fewest permissions. Codex starts in `read-only` mode. Claude starts in `plan` mode. The default mode of the agent does not change this. To increase the permissions, send the `set_mode` command with `harness_control`. machinectl refuses a mode that the agent does not have.
+
+The policy controls the answer to a permission request:
+
+| `MACHINECTL_ACP_PERMISSION` | Answer |
+|---|---|
+| `deny` (default) | Select the refuse option of the agent. |
+| `ask` | Hold the request and wait for a user. |
+| `allow` | Select the permit option of the agent. The operator must set this value. |
+
+With the `ask` policy, machinectl holds the request and the agent waits. The relay protocol permits only Worker-to-daemon requests. machinectl thus shows a held request with the existing tools. It does not add a new message type.
+
+```
+harness_control({ id, command: "pending_permissions" })
+harness_control({ id, command: "resolve_permission",
+                  args: { requestId: "perm-1", optionId: "allow_once" } })
+```
+
+When no user answers before `MACHINECTL_ACP_PERMISSION_TIMEOUT_MS` (default 120 s), machinectl selects the refuse option. machinectl records each decision as a session event with the related operation. This applies to a permitted request, a refused request, and a request that reached the time limit.
+
+machinectl tells the agent that it supplies `fs/read_text_file` and `fs/write_text_file`. When the agent uses these methods, machinectl applies `MACHINECTL_ALLOWED_PATHS` to the path and records the operation.
+
+**WARNING: This is a control point for agents that cooperate. It is also a record of delegated operations. It is not a sandbox.**
+
+These file capabilities do not force an agent to use them. The child process has all of your user permissions. An agent that has an internal write tool can ignore the machinectl control point. Tests with real agents show this behavior. OpenCode writes files. It does not call `fs/write_text_file`, and it does not request permission. Codex in `read-only` mode requests permission, machinectl refuses the request, and the write operation fails.
+
+machinectl can thus control an ACP agent only when the agent has a permission interface or a mode interface. `harness_catalog` and the `acp_ready` event show which agents have one. machinectl marks a session without one as `containment: "agent-discretion"` and gives a warning. For remote work without a user present, use an agent that has session modes.
 
 ### Existing cmux workspaces
 
-Set `MACHINECTL_ENABLE_CMUX=1` to publish the narrow cmux adapter. It calls the installed `cmux` CLI with fixed argument arrays over cmux's private local Unix socket; the socket is never network-exposed. Run `cmux hooks pi install --yes` once and restart Pi so cmux can pair each surface with its durable Pi session.
+Set `MACHINECTL_ENABLE_CMUX=1` to publish the cmux adapter. The adapter calls the installed `cmux` CLI with a fixed list of arguments. It uses the private local Unix socket of cmux. The network cannot connect to this socket. Run `cmux hooks pi install --yes` one time, then start Pi again. cmux can then connect each surface to its permanent Pi session.
 
 | Tool | Purpose |
 |---|---|
@@ -352,33 +429,41 @@ That orchestration layer belongs in the authenticated client or relay. The daemo
 | `MACHINECTL_LOG_TIMING` | unset | Set to `1` to log bounded local screenshot and persisted-session timing diagnostics. |
 | `MACHINECTL_PI_PERSISTED_CACHE_MS` | `10000` | Cache lifetime for explicit persisted Pi-session discovery. |
 | `MACHINECTL_ENABLE_PI` | unset | Set to `1` or `true` to publish the Pi adapter and deprecated `pi_*` aliases. |
+| `MACHINECTL_ENABLE_ACP` | unset | Set to `1` or `true` to publish the Agent Client Protocol adapters. |
+| `MACHINECTL_ACP_AGENTS` | `opencode` | The ACP agents to publish, with a comma between each agent: `opencode`, `claude`, `codex`, `amp`, `gemini`, or your own identifier. |
+| `MACHINECTL_ACP_COMMAND_<ID>` | supplied | The launch command for one ACP agent, for example `MACHINECTL_ACP_COMMAND_CODEX`. |
+| `MACHINECTL_ACP_PERMISSION` | `deny` | The answer to `session/request_permission`: `deny`, `ask`, or `allow`. |
+| `MACHINECTL_ACP_PERMISSION_TIMEOUT_MS` | `120000` | The time that an `ask` request waits for a user. After this time, machinectl refuses the request. |
+| `MACHINECTL_ACP_MODE` | unset | The session mode to use. If you do not set it, machinectl uses the mode that has the fewest permissions. |
+| `MACHINECTL_ACP_HANDSHAKE_TIMEOUT_MS` | `60000` | The time limit for `initialize`, `session/new`, and `session/set_mode`. |
+| `MACHINECTL_ACP_PROMPT_TIMEOUT_MS` | `300000` | The time limit for one `session/prompt` operation. |
 | `MACHINECTL_ENABLE_CMUX` | unset | Set to `1` or `true` to publish narrow controls for existing cmux/Pi workspaces. |
-| `MACHINECTL_CMUX_BIN` | `cmux` | Explicit cmux CLI path; invoked directly without a shell. |
+| `MACHINECTL_CMUX_BIN` | `cmux` | The path to the cmux CLI. machinectl calls it directly, without a shell. |
 | `MACHINECTL_CMUX_PI_SESSION_STORE` | `~/.cmuxterm/pi-hook-sessions.json` | Override the cmux Pi pairing store path, primarily for tests. |
-| `MACHINECTL_CMUX_PASSWORD_FILE` | unset | Read cmux's password-mode socket secret from a local mode-`0600` file for daemon use; the secret is never sent to the relay. |
+| `MACHINECTL_CMUX_PASSWORD_FILE` | unset | The local file with mode `0600` that contains the cmux socket secret. machinectl does not send this secret to the relay. |
 | `MACHINECTL_PI_MAX_SESSIONS` | `4` | Maximum concurrently active pi RPC sessions. |
 | `MACHINECTL_PI_MAX_RUNTIME_MS` | `7200000` | Maximum lifetime of a tracked pi process. |
 | `MACHINECTL_PI_STOP_GRACE_MS` | `5000` | Grace period before force-killing a stopped pi process group. |
 
 ## Security model
 
-An authenticated MCP caller is trusted with your computer:
+An authenticated MCP caller has full control of your computer:
 
-- `shell` is terminal-equivalent access as your local user;
-- `screenshot` can reveal private visible information;
-- `mouse` and `keyboard` can operate signed-in desktop applications;
-- `harness_*` tools can read and control local delegated-agent session content;
-- opt-in `cmux_*` tools can read bounded Pi terminal output and control only locally verified Pi-paired surfaces;
-- `local_auth_status` exposes only bounded diagnostic metadata, not credentials.
+- `shell` gives the same access as a terminal for your local user.
+- `screenshot` can show private information.
+- `mouse` and `keyboard` can operate applications that have a login.
+- The `harness_*` tools can read and control the content of a local agent session.
+- The optional `cmux_*` tools can read recent Pi terminal output. They control only a Pi surface that machinectl verifies locally.
+- `local_auth_status` shows only short diagnostic data. It shows no credentials.
 
 The included relay example:
 
-- authenticates calls through Cloudflare Access;
-- maintains one connected laptop per authenticated identity;
-- limits catalog, request, result and in-flight sizes;
-- optionally stores content-minimizing audit receipts without tool output content.
+- It authenticates each call through Cloudflare Access.
+- It keeps one connected computer for each authenticated identity.
+- It limits the size of the catalog, the request, the result, and the data in transfer.
+- It can store short audit records. The records contain no tool output.
 
-Do not use an uncontained laptop relay for workloads requiring container isolation or read-only execution. See [SECURITY.md](./SECURITY.md).
+Do not use this relay for work that needs container isolation. Do not use it for work that needs read-only operation. Refer to [SECURITY.md](./SECURITY.md).
 
 ## Development
 
@@ -389,7 +474,7 @@ npm test
 npm run dev
 ```
 
-The raw relay example is independently testable:
+You can test the basic relay example separately:
 
 ```bash
 cd examples/cloudflare-worker-relay
