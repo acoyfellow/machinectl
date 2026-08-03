@@ -426,6 +426,7 @@ That orchestration layer belongs in the authenticated client or relay. The daemo
 | `MACHINECTL_SCREENSHOT_MAX_BYTES` | `8388608` | Maximum encoded image bytes returned from a screenshot. |
 | `MACHINECTL_SCREENSHOT_DEFAULT_MAX_WIDTH` | `1440` | Default maximum width for preview screenshots. |
 | `MACHINECTL_SCREENSHOT_DEFAULT_QUALITY` | `68` | Default JPEG quality for preview screenshots. |
+| `MACHINECTL_STATE_DIR` | `~/.local/state` | The directory for the single instance lock. `XDG_STATE_HOME` also sets it. |
 | `MACHINECTL_LOG_TIMING` | unset | Set to `1` to log bounded local screenshot and persisted-session timing diagnostics. |
 | `MACHINECTL_PI_PERSISTED_CACHE_MS` | `10000` | Cache lifetime for explicit persisted Pi-session discovery. |
 | `MACHINECTL_ENABLE_PI` | unset | Set to `1` or `true` to publish the Pi adapter and deprecated `pi_*` aliases. |
@@ -444,6 +445,20 @@ That orchestration layer belongs in the authenticated client or relay. The daemo
 | `MACHINECTL_PI_MAX_SESSIONS` | `4` | Maximum concurrently active pi RPC sessions. |
 | `MACHINECTL_PI_MAX_RUNTIME_MS` | `7200000` | Maximum lifetime of a tracked pi process. |
 | `MACHINECTL_PI_STOP_GRACE_MS` | `5000` | Grace period before force-killing a stopped pi process group. |
+
+## One daemon for each identity
+
+Two daemons that use one `MACHINECTL_NAME` and one relay are a failure mode that is difficult to see. The relay keeps one connection for each machine identity. Each new daemon thus removes the other daemon. The two daemons then reconnect again and again. Your calls go to one daemon or the other daemon, and you cannot control which one.
+
+The result is worse than a stopped daemon. If the two daemons have different configurations, each one gives a different list of tools. A tool such as `cmux_workspace_list` is then available for some calls and absent for other calls. No error message shows the cause.
+
+machinectl thus gets a lock at start. The lock is one file in `MACHINECTL_STATE_DIR`. The name of the file comes from the machine name and the relay URL:
+
+- If a live daemon holds the identity, the new daemon writes the process identifier of that daemon and stops with exit code 1.
+- If the daemon that holds the lock is dead, the new daemon removes the old lock and continues. A restart after a crash or a power failure thus needs no manual work.
+- A different `MACHINECTL_NAME`, or a different relay, gets a different lock. You can operate a development daemon and a production daemon at the same time.
+
+To find a daemon that has your identity, use `pgrep -f dist/index.js`. Then compare the result with `launchctl list` on macOS.
 
 ## Security model
 

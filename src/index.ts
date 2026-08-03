@@ -34,6 +34,7 @@ import { execSync } from "node:child_process";
 import { hostname } from "node:os";
 import { buildToolRegistry, shutdownTools } from "./tools.js";
 import { shutdownAgentSessions } from "./agent-sessions.js";
+import { acquireInstanceLock, InstanceLockedError, type InstanceLock } from "./single-instance.js";
 import type { LaptopFrame, PublishedTool, RegisteredTool, WorkerFrame } from "./protocol.js";
 
 // ─── config ──────────────────────────────────────────────────────────────
@@ -152,6 +153,14 @@ function requestShutdown(reason: string) {
   closeActiveSocket();
   shutdownTools();
   shutdownAgentSessions(`machinectl received ${reason}`);
+  releaseInstanceLock();
+}
+
+let instanceLock: InstanceLock | undefined;
+
+function releaseInstanceLock() {
+  instanceLock?.release();
+  instanceLock = undefined;
 }
 
 async function connectOnce(): Promise<void> {
@@ -310,7 +319,20 @@ function banner() {
 process.on("SIGINT", () => requestShutdown("SIGINT"));
 process.on("SIGTERM", () => requestShutdown("SIGTERM"));
 
+try {
+  instanceLock = acquireInstanceLock(MACHINE_NAME, URL_BASE);
+} catch (err) {
+  if (err instanceof InstanceLockedError) {
+    logErr(err.message);
+    process.exit(1);
+  }
+  throw err;
+}
+
+process.on("exit", releaseInstanceLock);
+
 banner();
+
 runForever().catch((err) => {
   logErr("fatal:", err);
   process.exit(1);
