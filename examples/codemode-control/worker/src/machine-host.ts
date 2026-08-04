@@ -43,6 +43,7 @@ export class MachineHost extends DurableObject<HostEnv> {
     if (path === "/connect") return this.acceptConnection(request);
     if (path === "/mcp") return this.mcp(request);
     if (path === "/call") return this.directCall(request);
+    if (path === "/execution-receipt") return this.executionReceipt(request);
     if (path === "/status") {
       const connected = this.socket() !== null;
       const [machineName, tools] = connected ? await Promise.all([this.machineName(), this.tools()]) : [null, []];
@@ -106,6 +107,16 @@ export class MachineHost extends DurableObject<HostEnv> {
   private async tools(): Promise<PublishedTool[]> { return this.cachedTools ??= (await this.ctx.storage.get<PublishedTool[]>(TOOLS)) ?? []; }
   private async machineName(): Promise<string | null> { this.cachedMachineName ??= (await this.ctx.storage.get<string>(MACHINE_NAME)) ?? undefined; return this.cachedMachineName ?? null; }
 
+  private async executionReceipt(request: Request): Promise<Response> {
+    const identity = this.identity(request);
+    const bodyText = await request.text();
+    if (byteLength(bodyText) > ARGS_BYTE_LIMIT) return new Response("request too large", { status: 413 });
+    let record: Record<string, unknown>;
+    try { record = JSON.parse(bodyText) as Record<string, unknown>; } catch { return Response.json({ ok: false, error: "parse error" }, { status: 400 }); }
+    this.ctx.waitUntil(this.writeExecutionReceipt(identity, record).catch((error) => console.error("machinectl_receipt_failed", error)));
+    return Response.json({ ok: true });
+  }
+
   private async directCall(request: Request): Promise<Response> {
     const identity = this.identity(request);
     const bodyText = await request.text(); if (byteLength(bodyText) > ARGS_BYTE_LIMIT) return new Response("request too large", { status: 413 });
@@ -141,11 +152,21 @@ export class MachineHost extends DurableObject<HostEnv> {
     return new Promise((resolve) => { const timer = setTimeout(() => { this.pending.delete(id); resolve({ ok: false, error: "machine tool call timed out" }); }, CALL_TIMEOUT_MS); this.pending.set(id, { resolve, timer, tool, dispatchedAt: Date.now() }); socket.send(JSON.stringify({ type: "call", id, tool, args })); });
   }
 
+  private async writeExecutionReceipt(identity: InternalIdentity, record: Record<string, unknown>): Promise<void> {
+    if (!this.env.AUDIT_KV) return;
+    const receipt = { schema: "machinectl.codemode-receipt.v1", timestamp: new Date().toISOString(), identity: identity.email, execution: record };
+    await this.env.AUDIT_KV.put(`machinectl:codemode:${await this.principal(identity)}:${Date.now()}:${crypto.randomUUID()}`, JSON.stringify(receipt), { expirationTtl: RECEIPT_TTL_SECONDS });
+  }
+
+  private async principal(identity: InternalIdentity): Promise<string> {
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(identity.email));
+    return Array.from(new Uint8Array(digest).slice(0, 12), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  }
+
   private async writeReceipt(identity: InternalIdentity, tool: string, args: Record<string, unknown>, result: ToolResult): Promise<void> {
     if (!this.env.AUDIT_KV) return;
     const receipt = { schema: "machinectl.audit-receipt.v1", timestamp: new Date().toISOString(), identity: identity.email, tool, request: summarizeArgs(tool, args), result: { ok: result.ok, byteLength: byteLength(result.ok ? result.content : result.error), contentStored: false } };
-    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(identity.email));
-    const principal = Array.from(new Uint8Array(digest).slice(0, 12), (byte) => byte.toString(16).padStart(2, "0")).join("");
+    const principal = await this.principal(identity);
     await this.env.AUDIT_KV.put(`machinectl:${principal}:${Date.now()}:${crypto.randomUUID()}`, JSON.stringify(receipt), { expirationTtl: RECEIPT_TTL_SECONDS });
   }
 }

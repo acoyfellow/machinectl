@@ -82,3 +82,26 @@ test("data url detection accepts supported images and rejects others", () => {
   assert.equal(isImageDataUrl("data:image/svg+xml;base64,PHN2Zy8+"), false);
   assert.equal(isImageDataUrl("not a data url"), false);
 });
+
+test("the manifest lists every retained attachment without bytes", () => {
+  const store = new AttachmentStore();
+  const first = store.retain(png(128));
+  const second = store.retain(png(256));
+  const manifest = store.manifest();
+  assert.equal(manifest.length, 2);
+  assert.deepEqual(manifest.map((entry) => entry.attachmentId).sort(), [first.attachmentId, second.attachmentId].sort());
+  assert.equal(JSON.stringify(manifest).includes("AAAA"), false);
+  for (const entry of manifest) {
+    assert.equal(entry.mediaType, "image/png");
+    assert.ok(entry.byteLength > 0);
+  }
+});
+
+test("the manifest distinguishes retained from returned attachments", () => {
+  const store = new AttachmentStore();
+  const kept = store.retain(png(64));
+  store.retain(png(64));
+  assert.equal(store.manifest().length, 2, "both were captured during the execution");
+  const returned = store.referenced({ shot: kept.attachmentId });
+  assert.equal(returned.length, 1, "only one was surfaced to the caller");
+});

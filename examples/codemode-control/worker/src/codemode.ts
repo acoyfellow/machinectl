@@ -14,6 +14,20 @@ export interface CodeModeEnv {
 type ToolResult = { ok: true; content: string } | { ok: false; error: string };
 type Forward = (tool: string, args: Record<string, unknown>) => Promise<ToolResult>;
 
+export interface CodeModeExecutionRecord {
+  executionId: string;
+  toolsHash: string;
+  calls: number;
+  rejected: number;
+  ok: boolean;
+  elapsedMs: number;
+  toolsInvoked: readonly string[];
+  attachments: readonly { attachmentId: string; mediaType: string; byteLength: number }[];
+  attachmentsReturned: readonly string[];
+}
+
+export type RecordExecution = (record: CodeModeExecutionRecord) => void;
+
 const CODE_TIMEOUT_MS = 30_000;
 const CODE_RESULT_MAX_CHARS = 24_000;
 const IMAGE_RESULT_MAX_BYTES = 12 * 1024 * 1024;
@@ -64,7 +78,7 @@ function addLaptopTools(server: McpServer, catalog: PublishedTool[], forward: Fo
   }
 }
 
-export async function handleCodeModeRequest(request: Request, env: CodeModeEnv, catalog: PublishedTool[], forward: Forward): Promise<Response> {
+export async function handleCodeModeRequest(request: Request, env: CodeModeEnv, catalog: PublishedTool[], forward: Forward, recordExecution?: RecordExecution): Promise<Response> {
   const upstream = new McpServer({ name: "machinectl-direct", version: "0.1.0" });
   addLaptopTools(upstream, catalog, forward);
 
@@ -82,8 +96,10 @@ export async function handleCodeModeRequest(request: Request, env: CodeModeEnv, 
   const governor = new CallGovernor();
   const fns: Record<string, (args: unknown) => Promise<unknown>> = {};
   const schemaByName = new Map(catalog.map((entry) => [entry.name, entry.inputSchema]));
+  const toolsInvoked: string[] = [];
   for (const tool of tools) {
     fns[tool.name] = async (args) => governor.run(tool.name, async () => {
+      if (!toolsInvoked.includes(tool.name)) toolsInvoked.push(tool.name);
       const rejection = checkArgs(tool.name, schemaByName.get(tool.name), args);
       if (rejection) throw new Error(rejection.error);
       const result = await client.callTool({ name: tool.name, arguments: args as Record<string, unknown> }) as {
@@ -112,10 +128,24 @@ export async function handleCodeModeRequest(request: Request, env: CodeModeEnv, 
     description: `Execute JavaScript against an explicitly connected laptop through isolated Code Mode. The underlying shell capability is terminal-equivalent; use it only when authorized. External network access from this orchestration sandbox is disabled.\n\nAvailable methods:\n${types}\n\nWrite an async arrow function in JavaScript that returns the result. Do not use TypeScript syntax.\n\n${example}`,
     inputSchema: { code: z.string().describe("JavaScript async arrow function to execute") },
   }, async ({ code }) => {
+    const executionId = crypto.randomUUID();
+    const startedAt = Date.now();
     const execution = await executor.execute(code, [{ name: "codemode", fns }]);
-    console.log("machinectl_codemode_execution", { toolsHash, ...governor.metrics, ok: !execution.error });
+    const referencedOnError = execution.error ? [] : attachments.referenced(execution.result);
+    const record: CodeModeExecutionRecord = {
+      executionId,
+      toolsHash,
+      ...governor.metrics,
+      ok: !execution.error,
+      elapsedMs: Date.now() - startedAt,
+      toolsInvoked: [...toolsInvoked],
+      attachments: attachments.manifest(),
+      attachmentsReturned: referencedOnError.map((entry) => entry.id),
+    };
+    console.log("machinectl_codemode_execution", record);
+    recordExecution?.(record);
     if (execution.error) return { isError: true, content: [{ type: "text" as const, text: execution.error }] };
-    const referenced = attachments.referenced(execution.result);
+    const referenced = referencedOnError;
     const text = typeof execution.result === "string" ? execution.result : JSON.stringify(execution.result, null, 2);
     const parts: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [
       { type: "text" as const, text: text.slice(0, CODE_RESULT_MAX_CHARS) },

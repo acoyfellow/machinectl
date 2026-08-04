@@ -20,5 +20,6 @@
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["MachineHost"] }],
   "worker_loaders": [{ "binding": "LOADER" }],
+  "kv_namespaces": [{ "binding": "AUDIT_KV", "id": "audit_local" }],
   "observability": { "enabled": true }
 }

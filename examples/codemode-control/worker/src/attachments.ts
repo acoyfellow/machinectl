@@ -43,6 +43,10 @@ export class AttachmentStore {
     return typeof id === "string" ? this.items.get(id) : undefined;
   }
 
+  manifest(): readonly AttachmentMetadata[] {
+    return [...this.items.values()].map((entry) => ({ attachmentId: entry.id, mediaType: entry.mediaType, byteLength: entry.byteLength }));
+  }
+
   referenced(value: unknown): readonly Attachment[] {
     const found: Attachment[] = [];
     const seen = new Set<string>();

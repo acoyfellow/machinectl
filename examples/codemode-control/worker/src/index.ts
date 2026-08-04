@@ -1,6 +1,6 @@
 import { Hono, type Context } from "hono";
 import { accessMiddleware, type AccessIdentity } from "./auth";
-import { handleCodeModeRequest } from "./codemode";
+import { handleCodeModeRequest, type CodeModeExecutionRecord } from "./codemode";
 import { MachineHost, type PublishedTool } from "./machine-host";
 
 interface Env {
@@ -58,6 +58,21 @@ async function forwardedCall(c: Context<AppEnv>, tool: string, args: Record<stri
   return machineHost(c).fetch(new Request("http://internal/call", { method: "POST", headers, body: JSON.stringify({ tool, arguments: args }) })).then((response) => response.json<ToolResult>());
 }
 
+function recordExecution(c: Context<AppEnv>, record: CodeModeExecutionRecord): void {
+  const identity = c.get("identity");
+  const headers = new Headers({
+    "Content-Type": "application/json",
+    "X-Machinectl-Identity-Email": identity.email,
+    "X-Machinectl-Identity-Sub": identity.sub,
+  });
+  c.executionCtx.waitUntil(
+    machineHost(c)
+      .fetch(new Request("http://internal/execution-receipt", { method: "POST", headers, body: JSON.stringify(record) }))
+      .then(() => undefined)
+      .catch((error) => console.error("machinectl_execution_receipt_failed", error)),
+  );
+}
+
 app.get("/machinectl/connect", (c) => machineHost(c).fetch(internalRequest(c, "/connect")));
 function directToolsEnabled(c: Context<AppEnv>) {
   return c.env.MACHINECTL_ENV === "development" || c.env.MACHINECTL_ALLOW_DIRECT_TOOLS === "1";
@@ -85,7 +100,7 @@ app.post("/api/code", async (c) => {
     headers: { "content-type": "application/json", "accept": "application/json, text/event-stream" },
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "code", arguments: { code: body.code } } }),
   });
-  const response = await handleCodeModeRequest(mcpRequest, c.env, state.connected ? state.tools ?? [] : [], (tool, args) => forwardedCall(c, tool, args));
+  const response = await handleCodeModeRequest(mcpRequest, c.env, state.connected ? state.tools ?? [] : [], (tool, args) => forwardedCall(c, tool, args), (record) => recordExecution(c, record));
   const json = await response.json<{ result?: { content?: Array<{ type?: string; text?: string; data?: string; mimeType?: string }>; isError?: boolean }; error?: { message?: string } }>().catch(() => null);
   if (!json) return c.json({ ok: false, error: "invalid code response" }, 500);
   const parts = json.result?.content ?? [];
@@ -98,7 +113,7 @@ app.post("/api/code", async (c) => {
 });
 app.post("/mcp", async (c) => {
   const state = await status(c).then((response) => response.json<{ connected: boolean; tools?: PublishedTool[] }>());
-  return handleCodeModeRequest(c.req.raw, c.env, state.connected ? state.tools ?? [] : [], (tool, args) => forwardedCall(c, tool, args));
+  return handleCodeModeRequest(c.req.raw, c.env, state.connected ? state.tools ?? [] : [], (tool, args) => forwardedCall(c, tool, args), (record) => recordExecution(c, record));
 });
 
 app.all("*", async (c) => {
