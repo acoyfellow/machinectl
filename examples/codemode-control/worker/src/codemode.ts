@@ -4,6 +4,7 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import { z } from "zod";
 import type { PublishedTool } from "./machine-host";
 import { AttachmentStore, isImageDataUrl } from "./attachments";
+import { CallGovernor, catalogHash } from "./call-governor";
 
 export interface CodeModeEnv {
   LOADER: WorkerLoader;
@@ -77,9 +78,10 @@ export async function handleCodeModeRequest(request: Request, env: CodeModeEnv, 
   await client.connect(clientTransport);
   const { tools } = await client.listTools();
   const attachments = new AttachmentStore();
+  const governor = new CallGovernor();
   const fns: Record<string, (args: unknown) => Promise<unknown>> = {};
   for (const tool of tools) {
-    fns[tool.name] = async (args) => {
+    fns[tool.name] = async (args) => governor.run(tool.name, async () => {
       const result = await client.callTool({ name: tool.name, arguments: args as Record<string, unknown> }) as {
         isError?: boolean;
         content: Array<{ type: string; text?: string }>;
@@ -92,8 +94,9 @@ export async function handleCodeModeRequest(request: Request, env: CodeModeEnv, 
         return retained;
       }
       return parseLaptopResult(texts);
-    };
+    });
   }
+  const toolsHash = await catalogHash(tools.map((tool) => tool.name));
   const types = typesForCatalog(catalog);
   const exampleTool = catalog.find((tool) => tool.name === "screenshot") ?? catalog[0];
   const example = exampleTool
@@ -106,6 +109,7 @@ export async function handleCodeModeRequest(request: Request, env: CodeModeEnv, 
     inputSchema: { code: z.string().describe("JavaScript async arrow function to execute") },
   }, async ({ code }) => {
     const execution = await executor.execute(code, [{ name: "codemode", fns }]);
+    console.log("machinectl_codemode_execution", { toolsHash, ...governor.metrics, ok: !execution.error });
     if (execution.error) return { isError: true, content: [{ type: "text" as const, text: execution.error }] };
     const referenced = attachments.referenced(execution.result);
     const text = typeof execution.result === "string" ? execution.result : JSON.stringify(execution.result, null, 2);
