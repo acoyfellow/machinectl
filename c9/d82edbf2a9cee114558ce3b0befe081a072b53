@@ -1,0 +1,29 @@
+examples/codemode-control/test/attachments.test.mjs
+  s_fc73a7c9587683::t_1b1ac1d9015877 85-107
+examples/codemode-control/worker/src/attachments.ts
+  s_fc73a7c9587683::t_0f12dd72b0ef0f 46-49
+examples/codemode-control/worker/src/codemode.ts
+  s_fc73a7c9587683::t_967e64682632a5 17-30,81,99,102,131-132,134-146,148
+examples/codemode-control/worker/src/index.ts
+  s_fc73a7c9587683::t_26eff5a3a71237 3,61-75,103,116
+examples/codemode-control/worker/src/machine-host.ts
+  s_fc73a7c9587683::t_1c966ab47f97fc 46,110-119,155-165,169
+examples/codemode-control/wrangler.local.jsonc
+  s_fc73a7c9587683::t_a32b6c51db5ab1 23
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c9d82edbf2a9cee114558ce3b0befe081a072b53",
+  "prompts": {},
+  "sessions": {
+    "s_fc73a7c9587683": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "019f959f-ed3f-78c4-b8f7-55e513d85ddb",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Jordan Coeyman <jcoeyman@cloudflare.com>"
+    }
+  }
+}
