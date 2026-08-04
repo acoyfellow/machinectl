@@ -1,0 +1,21 @@
+examples/codemode-control/test/arg-guard.test.mjs
+  s_fc73a7c9587683::t_134a80a458461e 1-66
+examples/codemode-control/worker/src/codemode.ts
+  s_fc73a7c9587683::t_97cec438697538 8,84,87-88
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f0d7a5ba7839aaa05c7f83a3b00bce4acd98ebd0",
+  "prompts": {},
+  "sessions": {
+    "s_fc73a7c9587683": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "019f959f-ed3f-78c4-b8f7-55e513d85ddb",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Jordan Coeyman <jcoeyman@cloudflare.com>"
+    }
+  }
+}
