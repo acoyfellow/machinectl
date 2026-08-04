@@ -1,0 +1,19 @@
+examples/codemode-control/worker/src/index.ts
+  s_fc73a7c9587683::t_a3a01ef864f5b9 89,91-97
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "57d01d7d9760981363c50afa20203d83f4f4ccb2",
+  "prompts": {},
+  "sessions": {
+    "s_fc73a7c9587683": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "019f959f-ed3f-78c4-b8f7-55e513d85ddb",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Jordan Coeyman <jcoeyman@cloudflare.com>"
+    }
+  }
+}
