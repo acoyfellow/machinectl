@@ -86,11 +86,15 @@ app.post("/api/code", async (c) => {
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "code", arguments: { code: body.code } } }),
   });
   const response = await handleCodeModeRequest(mcpRequest, c.env, state.connected ? state.tools ?? [] : [], (tool, args) => forwardedCall(c, tool, args));
-  const json = await response.json<{ result?: { content?: Array<{ type?: string; text?: string }>; isError?: boolean }; error?: { message?: string } }>().catch(() => null);
+  const json = await response.json<{ result?: { content?: Array<{ type?: string; text?: string; data?: string; mimeType?: string }>; isError?: boolean }; error?: { message?: string } }>().catch(() => null);
   if (!json) return c.json({ ok: false, error: "invalid code response" }, 500);
-  const text = json.result?.content?.filter((part) => part.type === "text").map((part) => part.text ?? "").join("\n") ?? json.error?.message ?? "";
-  if (text.startsWith("data:image/")) return c.json({ ok: true, kind: "image", content: text });
-  return c.json({ ok: !json.result?.isError && !json.error, content: text, error: json.result?.isError || json.error ? text : undefined });
+  const parts = json.result?.content ?? [];
+  const text = parts.filter((part) => part.type === "text").map((part) => part.text ?? "").join("\n") || json.error?.message || "";
+  const failed = !!json.result?.isError || !!json.error;
+  const image = parts.find((part) => part.type === "image" && part.data);
+  if (!failed && image) return c.json({ ok: true, kind: "image", content: `data:${image.mimeType ?? "image/png"};base64,${image.data}`, text });
+  if (!failed && text.startsWith("data:image/")) return c.json({ ok: true, kind: "image", content: text });
+  return c.json({ ok: !failed, content: text, error: failed ? text : undefined });
 });
 app.post("/mcp", async (c) => {
   const state = await status(c).then((response) => response.json<{ connected: boolean; tools?: PublishedTool[] }>());
