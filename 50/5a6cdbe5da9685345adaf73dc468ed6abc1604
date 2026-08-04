@@ -1,0 +1,31 @@
+examples/codemode-control/test/call-governor.test.mjs
+  s_fc73a7c9587683::t_ab549faa72851c 1-60
+examples/codemode-control/worker/src/call-governor.ts
+  s_7620bbef154386::t_68e82067a3f83e 1-70
+examples/codemode-control/worker/src/codemode.ts
+  s_fc73a7c9587683::t_0b31a5aa3ef8fc 7,81,84,97,99,112
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "505a6cdbe5da9685345adaf73dc468ed6abc1604",
+  "prompts": {},
+  "sessions": {
+    "s_7620bbef154386": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "019fc20e-3dfc-7918-be50-2549675e3855",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Jordan Coeyman <jcoeyman@cloudflare.com>"
+    },
+    "s_fc73a7c9587683": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "019f959f-ed3f-78c4-b8f7-55e513d85ddb",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Jordan Coeyman <jcoeyman@cloudflare.com>"
+    }
+  }
+}
