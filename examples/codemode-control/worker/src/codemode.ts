@@ -3,6 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { z } from "zod";
 import type { PublishedTool } from "./machine-host";
+import { AttachmentStore, isImageDataUrl } from "./attachments";
 
 export interface CodeModeEnv {
   LOADER: WorkerLoader;
@@ -13,7 +14,6 @@ type Forward = (tool: string, args: Record<string, unknown>) => Promise<ToolResu
 
 const CODE_TIMEOUT_MS = 30_000;
 const CODE_RESULT_MAX_CHARS = 24_000;
-const IMAGE_DATA_URL_RE = /^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/=\r\n]+$/;
 const IMAGE_RESULT_MAX_BYTES = 12 * 1024 * 1024;
 
 function parseLaptopResult(content: string): unknown {
@@ -76,6 +76,7 @@ export async function handleCodeModeRequest(request: Request, env: CodeModeEnv, 
   const client = new Client({ name: "machinectl-code-proxy", version: "0.1.0" });
   await client.connect(clientTransport);
   const { tools } = await client.listTools();
+  const attachments = new AttachmentStore();
   const fns: Record<string, (args: unknown) => Promise<unknown>> = {};
   for (const tool of tools) {
     fns[tool.name] = async (args) => {
@@ -85,6 +86,11 @@ export async function handleCodeModeRequest(request: Request, env: CodeModeEnv, 
       };
       const texts = result.content.filter((part) => part.type === "text").map((part) => part.text ?? "").join("\n");
       if (result.isError) throw new Error(texts || "Laptop tool failed");
+      if (isImageDataUrl(texts)) {
+        const retained = attachments.retain(texts);
+        if ("error" in retained) throw new Error(retained.error);
+        return retained;
+      }
       return parseLaptopResult(texts);
     };
   }
@@ -101,16 +107,18 @@ export async function handleCodeModeRequest(request: Request, env: CodeModeEnv, 
   }, async ({ code }) => {
     const execution = await executor.execute(code, [{ name: "codemode", fns }]);
     if (execution.error) return { isError: true, content: [{ type: "text" as const, text: execution.error }] };
+    const referenced = attachments.referenced(execution.result);
     const text = typeof execution.result === "string" ? execution.result : JSON.stringify(execution.result, null, 2);
-    // Keep validated screenshot data URLs intact for this human-facing example
-    // so its UI can render them. All other Code Mode output stays tightly bounded.
-    if (text.startsWith("data:image/")) {
-      if (!IMAGE_DATA_URL_RE.test(text) || new TextEncoder().encode(text).byteLength > IMAGE_RESULT_MAX_BYTES) {
-        return { isError: true, content: [{ type: "text" as const, text: "invalid or oversized screenshot result" }] };
-      }
-      return { content: [{ type: "text" as const, text }] };
+    const parts: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [
+      { type: "text" as const, text: text.slice(0, CODE_RESULT_MAX_CHARS) },
+    ];
+    let imageBytes = 0;
+    for (const attachment of referenced) {
+      if (imageBytes + attachment.byteLength > IMAGE_RESULT_MAX_BYTES) break;
+      imageBytes += attachment.byteLength;
+      parts.push({ type: "image" as const, data: attachment.dataUrl.slice(attachment.dataUrl.indexOf(",") + 1), mimeType: attachment.mediaType });
     }
-    return { content: [{ type: "text" as const, text: text.slice(0, CODE_RESULT_MAX_CHARS) }] };
+    return { content: parts };
   });
   const transport = new WebStandardStreamableHTTPServerTransport({ enableJsonResponse: true });
   await coded.connect(transport);
