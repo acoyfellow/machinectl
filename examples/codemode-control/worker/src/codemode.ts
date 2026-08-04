@@ -5,6 +5,7 @@ import { z } from "zod";
 import type { PublishedTool } from "./machine-host";
 import { AttachmentStore, isImageDataUrl } from "./attachments";
 import { CallGovernor, catalogHash } from "./call-governor";
+import { checkArgs } from "./arg-guard";
 
 export interface CodeModeEnv {
   LOADER: WorkerLoader;
@@ -80,8 +81,11 @@ export async function handleCodeModeRequest(request: Request, env: CodeModeEnv, 
   const attachments = new AttachmentStore();
   const governor = new CallGovernor();
   const fns: Record<string, (args: unknown) => Promise<unknown>> = {};
+  const schemaByName = new Map(catalog.map((entry) => [entry.name, entry.inputSchema]));
   for (const tool of tools) {
     fns[tool.name] = async (args) => governor.run(tool.name, async () => {
+      const rejection = checkArgs(tool.name, schemaByName.get(tool.name), args);
+      if (rejection) throw new Error(rejection.error);
       const result = await client.callTool({ name: tool.name, arguments: args as Record<string, unknown> }) as {
         isError?: boolean;
         content: Array<{ type: string; text?: string }>;
