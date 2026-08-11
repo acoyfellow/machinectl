@@ -247,7 +247,19 @@ shell({
 
 Runs through `bash -lc` as the daemon user. Output is capped. On timeout or daemon shutdown, machinectl terminates the shell process group.
 
-`MACHINECTL_ALLOWED_PATHS` limits only an explicit `cwd`. It does **not** put the shell command in a sandbox.
+`shell` is off by default. Set `MACHINECTL_ENABLE_SHELL=1` to publish it.
+
+Three controls bound it:
+
+| Control | Effect |
+| --- | --- |
+| `MACHINECTL_ENABLE_SHELL` | Withholds the tool completely when unset. |
+| `MACHINECTL_ALLOWED_PATHS` | Validates an explicit `cwd`, and supplies the working directory when the caller omits one. |
+| `MACHINECTL_SHELL_ENV_PASSTHROUGH` | Names the extra environment variables a command may read. |
+
+The command's direct environment holds `HOME`, `LANG`, `LC_ALL`, `LOGNAME`, `PATH`, `SHELL`, `TERM`, `TMPDIR`, `TZ`, `USER`, and your passthrough list. `MACHINECTL_ACCESS_TOKEN` is excluded even if it appears in the passthrough list.
+
+These controls limit the path and the directly inherited environment. They do **not** put the shell command in a sandbox. On Linux, a command running as the same user may inspect the daemon's original environment through `/proc`, so this does not guarantee that an Access-token override is unreadable. A command still runs with your user's file permissions.
 
 #### `screenshot`
 
@@ -421,7 +433,9 @@ That orchestration layer belongs in the authenticated client or relay. The daemo
 | `MACHINECTL_URL` | required | URL of your trusted compatible Worker relay. |
 | `MACHINECTL_NAME` | hostname | Machine name published to the relay. |
 | `MACHINECTL_ACCESS_TOKEN` | unset | Explicit token override instead of retrieving an Access token through `cloudflared`. |
-| `MACHINECTL_ALLOWED_PATHS` | empty | Permitted explicit `shell.cwd` roots and optional pi project/session roots. |
+| `MACHINECTL_ALLOWED_PATHS` | empty | Permitted `shell.cwd` roots, the default shell working directory, and optional pi project/session roots. |
+| `MACHINECTL_ENABLE_SHELL` | off | Publishes the terminal-equivalent `shell` tool. |
+| `MACHINECTL_SHELL_ENV_PASSTHROUGH` | empty | Extra environment variable names a shell command may read. |
 | `MACHINECTL_SHELL_TIMEOUT` | `60000` | Default shell timeout in milliseconds. |
 | `MACHINECTL_SCREENSHOT_MAX_BYTES` | `8388608` | Maximum encoded image bytes returned from a screenshot. |
 | `MACHINECTL_SCREENSHOT_DEFAULT_MAX_WIDTH` | `1440` | Default maximum width for preview screenshots. |
@@ -462,9 +476,9 @@ To find a daemon that has your identity, use `pgrep -f dist/index.js`. Then comp
 
 ## Security model
 
-An authenticated MCP caller has full control of your computer:
+An authenticated MCP caller controls your computer:
 
-- `shell` gives the same access as a terminal for your local user.
+- `shell` gives the same access as a terminal for your local user. It is off until you set `MACHINECTL_ENABLE_SHELL`.
 - `screenshot` can show private information.
 - `mouse` and `keyboard` can operate applications that have a login.
 - The `harness_*` tools can read and control the content of a local agent session.
@@ -477,6 +491,16 @@ The included relay example:
 - It keeps one connected computer for each authenticated identity.
 - It limits the size of the catalog, the request, the result, and the data in transfer.
 - It can store short audit records. The records contain no tool output.
+
+### What the shell controls do
+
+| Control | What it does | What it does not do |
+| --- | --- | --- |
+| `MACHINECTL_ENABLE_SHELL` | Withholds `shell` until you set it. | It does not limit a command after you enable the tool. |
+| `MACHINECTL_ALLOWED_PATHS` | Sets the working directory, and refuses a `cwd` outside the roots. | It does not stop a command that names an absolute path. |
+| `MACHINECTL_SHELL_ENV_PASSTHROUGH` | Allows selected extra variables, except `MACHINECTL_ACCESS_TOKEN`, into the command's direct environment. | It does not stop a command that reads a credential file or, on Linux, a same-user process environment through `/proc`. |
+
+These controls bound the path and the directly inherited environment. They are not a sandbox. A command runs with the file permissions of your user.
 
 Do not use this relay for work that needs container isolation. Do not use it for work that needs read-only operation. Refer to [SECURITY.md](./SECURITY.md).
 
