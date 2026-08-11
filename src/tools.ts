@@ -8,6 +8,7 @@ import { z, type ZodSchema } from "zod";
 import { buildAgentSessionTools } from "./agent-sessions.js";
 import { accessibilityAction, accessibilityQuery } from "./accessibility.js";
 import { buildCmuxTools } from "./cmux.js";
+import { childEnv } from "./child-env.js";
 import type { RegisteredTool, ToolHandler } from "./protocol.js";
 
 const SHELL_TIMEOUT_MS = boundedInt("MACHINECTL_SHELL_TIMEOUT", 60_000, 1_000, 24 * 60 * 60 * 1000);
@@ -25,6 +26,8 @@ const SCREEN_RECORD_KILL_GRACE_MS = 1_500;
 const LOCAL_AUTH_STATUS_MAX_BYTES = 16 * 1024;
 const LOCAL_AUTH_STATUS_CACHE_MS = 60_000;
 const activeShells = new Set<ReturnType<typeof spawn>>();
+const SHELL_ENABLED = process.env.MACHINECTL_ENABLE_SHELL === "1" || process.env.MACHINECTL_ENABLE_SHELL === "true";
+
 const allowedCwds = (process.env.MACHINECTL_ALLOWED_PATHS ?? "")
   .split(",")
   .map((value) => value.trim())
@@ -34,6 +37,16 @@ const allowedCwds = (process.env.MACHINECTL_ALLOWED_PATHS ?? "")
 function boundedInt(name: string, fallback: number, min: number, max: number): number {
   const parsed = Number.parseInt(process.env[name] ?? "", 10);
   return Math.max(min, Math.min(max, Number.isFinite(parsed) ? parsed : fallback));
+}
+
+function shellEnv(): NodeJS.ProcessEnv {
+  return childEnv("MACHINECTL_SHELL_ENV_PASSTHROUGH");
+}
+
+async function resolveShellCwd(cwd: string | undefined): Promise<string | undefined> {
+  if (cwd) return validateCwd(cwd);
+  if (allowedCwds.length === 0) return undefined;
+  return fsRealpath(allowedCwds[0]).catch(() => allowedCwds[0]);
 }
 
 async function validateCwd(cwd: string): Promise<string> {
@@ -119,13 +132,13 @@ export function shutdownTools(): void {
 
 const shellTool = tool(
   "shell",
-  "Run a shell command as the local user. This is terminal-equivalent capability. Optional cwd must be inside MACHINECTL_ALLOWED_PATHS.",
+  "Run a shell command as the local user. This is terminal-equivalent capability. The command runs inside MACHINECTL_ALLOWED_PATHS, with a scrubbed environment.",
   { type: "object", properties: { command: { type: "string" }, cwd: { type: "string" }, timeoutMs: { type: "number" } }, required: ["command"] },
   z.object({ command: z.string().min(1), cwd: z.string().min(1).optional(), timeoutMs: z.number().int().min(1_000).max(24 * 60 * 60 * 1000).optional() }),
   async ({ command, cwd, timeoutMs }) => new Promise<string>(async (resolve, reject) => {
     let safeCwd: string | undefined;
-    try { safeCwd = cwd ? await validateCwd(cwd) : undefined; } catch (error) { reject(error); return; }
-    const child = spawn("bash", ["-lc", command], { cwd: safeCwd, env: process.env, stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32" });
+    try { safeCwd = await resolveShellCwd(cwd); } catch (error) { reject(error); return; }
+    const child = spawn("bash", ["-lc", command], { cwd: safeCwd, env: shellEnv(), stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32" });
     activeShells.add(child);
     let stdout = "";
     let stderr = "";
@@ -507,5 +520,5 @@ function run(command: string, args: string[]): Promise<{ code: number | null; st
 }
 
 export function buildToolRegistry(): RegisteredTool[] {
-  return [shellTool, screenshotTool, screenRecordTool, mouseTool, keyboardTool, inputSequenceTool, accessibilityQueryTool, accessibilityActionTool, localAuthStatusTool, ...buildAgentSessionTools(), ...buildCmuxTools()];
+  return [...(SHELL_ENABLED ? [shellTool] : []), screenshotTool, screenRecordTool, mouseTool, keyboardTool, inputSequenceTool, accessibilityQueryTool, accessibilityActionTool, localAuthStatusTool, ...buildAgentSessionTools(), ...buildCmuxTools()];
 }

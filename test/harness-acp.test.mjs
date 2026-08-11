@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, symlink as makeSymlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -291,6 +291,28 @@ test("an agent cannot write a file that is not in the permitted directories", as
       assert.ok(findUpdate(result.events, "fake_fs_write_result").reply.error);
       assert.ok(findEvent(result.events, "acp_fs_write_denied"));
       await assert.rejects(readFile(target, "utf-8"), "no file may be created outside the roots");
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+});
+
+test("an agent cannot write a new file through a symlink that leaves a permitted directory", async () => {
+  await withWorkspace(async (cwd) => {
+    const outside = await mkdtemp(join(tmpdir(), "machinectl-acp-outside-"));
+    const escape = join(cwd, "escape");
+    try {
+      await makeSymlink(outside, escape);
+      const escapedTarget = join(escape, "payload.txt");
+      const rejected = JSON.parse(runIsolated(scenarioSource(cwd), acpEnv(cwd, { FAKE_EMIT: "fs_write", FAKE_FS_PATH: escapedTarget })));
+      assert.ok(findUpdate(rejected.events, "fake_fs_write_result").reply.error);
+      assert.ok(findEvent(rejected.events, "acp_fs_write_denied"));
+      await assert.rejects(readFile(join(outside, "payload.txt"), "utf-8"));
+
+      const allowedTarget = join(cwd, "payload.txt");
+      const allowed = JSON.parse(runIsolated(scenarioSource(cwd), acpEnv(cwd, { FAKE_EMIT: "fs_write", FAKE_FS_PATH: allowedTarget })));
+      assert.equal(findUpdate(allowed.events, "fake_fs_write_result").reply.result, null);
+      assert.equal(await readFile(allowedTarget, "utf-8"), "written-by-agent");
     } finally {
       await rm(outside, { recursive: true, force: true });
     }

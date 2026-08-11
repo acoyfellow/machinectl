@@ -11,6 +11,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { z } from "zod";
+import { childEnv } from "./child-env.js";
 import type { RegisteredTool, ToolHandler } from "./protocol.js";
 
 const execFileAsync = promisify(execFile);
@@ -67,7 +68,7 @@ async function cmux(args: string[]): Promise<string> {
   const { stdout, stderr } = await execFileAsync(CMUX_BIN, args, {
     timeout: COMMAND_TIMEOUT_MS,
     maxBuffer: OUTPUT_CAP,
-    env: { ...process.env, CMUX_QUIET: "1", ...(password ? { CMUX_SOCKET_PASSWORD: password } : {}) },
+    env: childEnv("MACHINECTL_CMUX_ENV_PASSTHROUGH", { CMUX_QUIET: "1", ...(password ? { CMUX_SOCKET_PASSWORD: password } : {}) }),
   });
   if (stderr.trim()) throw new Error(`cmux failed: ${stderr.trim().slice(0, 500)}`);
   return stdout;

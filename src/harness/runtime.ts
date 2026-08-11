@@ -1,7 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { access, realpath as fsRealpath } from "node:fs/promises";
-import { dirname, resolve as pathResolve } from "node:path";
+import { basename, dirname, resolve as pathResolve } from "node:path";
 import type { HarnessAdapter, Session, Status } from "./types.js";
 
 export const OUTPUT_CAP = 512 * 1024;
@@ -32,12 +32,26 @@ async function canonicalRoots(): Promise<string[]> {
   return cachedCanonicalRoots;
 }
 
+async function canonicalPath(path: string): Promise<string> {
+  let existingAncestor = pathResolve(path);
+  let missingSuffix = "";
+  while (true) {
+    try {
+      return pathResolve(await fsRealpath(existingAncestor), missingSuffix);
+    } catch {
+      const parent = dirname(existingAncestor);
+      if (parent === existingAncestor) return pathResolve(existingAncestor, missingSuffix);
+      missingSuffix = missingSuffix ? `${basename(existingAncestor)}/${missingSuffix}` : basename(existingAncestor);
+      existingAncestor = parent;
+    }
+  }
+}
+
 export async function requireAllowedPath(path: string, label: string): Promise<string> {
   if (!hasConfiguredPathRoots) {
     throw new Error(`MACHINECTL_ALLOWED_PATHS is empty. ${label} needs a permitted path.`);
   }
-  const resolved = pathResolve(path);
-  const canonical = await fsRealpath(resolved).catch(() => resolved);
+  const canonical = await canonicalPath(path);
   const roots = await canonicalRoots();
   const allowed = roots.some((root) => canonical === root || canonical.startsWith(root + "/"));
   if (!allowed) throw new Error(`${label} "${path}" is not in MACHINECTL_ALLOWED_PATHS (${roots.join(", ")}).`);
@@ -189,7 +203,10 @@ export function requestWithId(session: Session, correlationId: string, frame: un
 
 export function processEnv(): NodeJS.ProcessEnv {
   const nodeBin = dirname(process.execPath);
-  return { ...process.env, PATH: `${nodeBin}:${process.env.PATH ?? ""}`, NO_COLOR: "1", TERM: "dumb" };
+  const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${nodeBin}:${process.env.PATH ?? ""}`, NO_COLOR: "1", TERM: "dumb" };
+  delete env.MACHINECTL_ACCESS_TOKEN;
+  delete env.MACHINECTL_CMUX_PASSWORD_FILE;
+  return env;
 }
 
 function attachOutput(session: Session) {

@@ -54,18 +54,22 @@ function rgbaPng(red, green, blue, alpha = 255) {
 }
 
 test("default registry exposes core controls without optional harness tools", () => {
-  assert.deepEqual(parseRun(coreSource), ["shell", "screenshot", "screen_record", "mouse", "keyboard", "input_sequence", "accessibility_query", "accessibility_action", "local_auth_status"]);
+  assert.deepEqual(parseRun(coreSource), ["screenshot", "screen_record", "mouse", "keyboard", "input_sequence", "accessibility_query", "accessibility_action", "local_auth_status"]);
+});
+
+test("the default registry withholds terminal-equivalent shell", () => {
+  assert.equal(parseRun(coreSource).includes("shell"), false);
 });
 
 test("shell validates explicit cwd roots and does not claim shell sandboxing", async () => {
   const allowed = await mkdtemp(join(tmpdir(), "machinectl-allowed-"));
   const outside = await mkdtemp(join(tmpdir(), "machinectl-outside-"));
   try {
-    const success = parseRun(invokeSource("shell", { command: "pwd", cwd: allowed, timeoutMs: 1000 }), { MACHINECTL_ALLOWED_PATHS: allowed });
+    const success = parseRun(invokeSource("shell", { command: "pwd", cwd: allowed, timeoutMs: 1000 }), { MACHINECTL_ENABLE_SHELL: "1", MACHINECTL_ALLOWED_PATHS: allowed });
     assert.equal(success.ok, true);
     assert.match(success.value, /Exit code: 0/);
     assert.match(success.value, new RegExp(await realpath(allowed)));
-    const denied = parseRun(invokeSource("shell", { command: "pwd", cwd: outside, timeoutMs: 1000 }), { MACHINECTL_ALLOWED_PATHS: allowed });
+    const denied = parseRun(invokeSource("shell", { command: "pwd", cwd: outside, timeoutMs: 1000 }), { MACHINECTL_ENABLE_SHELL: "1", MACHINECTL_ALLOWED_PATHS: allowed });
     assert.equal(denied.ok, false);
     assert.match(denied.error, /outside MACHINECTL_ALLOWED_PATHS/);
   } finally {
@@ -80,7 +84,7 @@ test("shell rejects a symlink cwd escape", async () => {
   const link = join(allowed, "escape");
   try {
     await makeSymlink(outside, link);
-    const denied = parseRun(invokeSource("shell", { command: "pwd", cwd: link, timeoutMs: 1000 }), { MACHINECTL_ALLOWED_PATHS: allowed });
+    const denied = parseRun(invokeSource("shell", { command: "pwd", cwd: link, timeoutMs: 1000 }), { MACHINECTL_ENABLE_SHELL: "1", MACHINECTL_ALLOWED_PATHS: allowed });
     assert.equal(denied.ok, false);
     assert.match(denied.error, /outside MACHINECTL_ALLOWED_PATHS/);
   } finally {

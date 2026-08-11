@@ -21,15 +21,21 @@ const MODE_PREFERENCE = [
   "acceptEdits", "agent", "dontAsk", "agent-full-access", "bypassPermissions",
 ];
 
-type AcpAgentConfig = { id: string; label: string; command: string[]; note: string };
+type AcpAgentConfig = { id: string; label: string; command: string[]; note: string; governable: boolean };
 
 const BUILT_IN_AGENTS: AcpAgentConfig[] = [
-  { id: "opencode", label: "OpenCode", command: ["opencode", "acp"], note: "Native ACP. To install, use: npm i -g opencode-ai. This agent has no session modes. It writes files without a request for permission. machinectl cannot control it." },
-  { id: "claude", label: "Claude Agent", command: ["claude-agent-acp"], note: "To install, use: npm i -g @agentclientprotocol/claude-agent-acp. This agent needs its own credentials in the environment. A `claude` CLI that has a login is not sufficient." },
-  { id: "codex", label: "Codex", command: ["codex-acp"], note: "To install, use: npm i -g @agentclientprotocol/codex-acp. This agent has the modes read-only, agent, and agent-full-access. It obeys a refused permission." },
-  { id: "amp", label: "Amp", command: ["amp-acp"], note: "To install, use: npm i -g amp-acp. This agent has no session modes. It cannot resume or list sessions." },
-  { id: "gemini", label: "Gemini CLI", command: ["gemini", "--experimental-acp"], note: "To install, use: npm i -g @google/gemini-cli" },
+  { id: "opencode", label: "OpenCode", command: ["opencode", "acp"], governable: false, note: "Native ACP. To install, use: npm i -g opencode-ai. This agent has no session modes. It writes files without a request for permission. machinectl cannot control it." },
+  { id: "claude", label: "Claude Agent", command: ["claude-agent-acp"], governable: true, note: "To install, use: npm i -g @agentclientprotocol/claude-agent-acp. This agent needs its own credentials in the environment. A `claude` CLI that has a login is not sufficient." },
+  { id: "codex", label: "Codex", command: ["codex-acp"], governable: true, note: "To install, use: npm i -g @agentclientprotocol/codex-acp. This agent has the modes read-only, agent, and agent-full-access. It obeys a refused permission." },
+  { id: "amp", label: "Amp", command: ["amp-acp"], governable: false, note: "To install, use: npm i -g amp-acp. This agent has no session modes. It cannot resume or list sessions." },
+  { id: "gemini", label: "Gemini CLI", command: ["gemini", "--experimental-acp"], governable: true, note: "To install, use: npm i -g @google/gemini-cli" },
 ];
+
+const ALLOW_UNGOVERNED = process.env.MACHINECTL_ACP_ALLOW_UNGOVERNED === "1" || process.env.MACHINECTL_ACP_ALLOW_UNGOVERNED === "true";
+
+export function advertisedClientCapabilities() {
+  return { fs: { readTextFile: true, writeTextFile: PERMISSION_POLICY !== "deny" }, terminal: false };
+}
 
 function envCommandOverride(id: string): string[] | undefined {
   const raw = process.env[`MACHINECTL_ACP_COMMAND_${id.toUpperCase().replace(/[^A-Z0-9]/g, "_")}`];
@@ -43,15 +49,27 @@ export function enabledAcpAgents(): AcpAgentConfig[] {
   if (!enabled) return [];
   const requested = (process.env.MACHINECTL_ACP_AGENTS ?? "opencode")
     .split(",").map((value) => value.trim().toLowerCase()).filter(Boolean);
-  return requested.flatMap((id) => {
+  const configured = requested.flatMap((id) => {
     const base = BUILT_IN_AGENTS.find((agent) => agent.id === id);
     const override = envCommandOverride(id);
     if (!base && !override) return [];
     const config: AcpAgentConfig = base
       ? { ...base, command: override ?? base.command }
-      : { id, label: id, command: override!, note: "Custom ACP agent from MACHINECTL_ACP_COMMAND override." };
+      : { id, label: id, command: override!, governable: true, note: "Custom ACP agent from MACHINECTL_ACP_COMMAND override." };
     return [config];
   });
+  if (PERMISSION_POLICY !== "allow" && !ALLOW_UNGOVERNED) {
+    const ungoverned = configured.filter((agent) => !agent.governable).map((agent) => agent.id);
+    if (ungoverned.length > 0) {
+      throw new Error(
+        `MACHINECTL_ACP_PERMISSION="${PERMISSION_POLICY}" cannot restrict these agents: ${ungoverned.join(", ")}. ` +
+          `They write files without requesting permission, so the policy does not apply to them and ` +
+          `MACHINECTL_ALLOWED_PATHS does not confine them. ` +
+          `Remove them from MACHINECTL_ACP_AGENTS, or set MACHINECTL_ACP_ALLOW_UNGOVERNED=1 to accept that they run with your full user permissions.`,
+      );
+    }
+  }
+  return configured;
 }
 
 export type PendingPermission = {
@@ -252,7 +270,7 @@ function buildAdapter(config: AcpAgentConfig): HarnessAdapter {
 
       const initialize = await rpc(session, "initialize", {
         protocolVersion: ACP_PROTOCOL_VERSION,
-        clientCapabilities: { fs: { readTextFile: true, writeTextFile: true }, terminal: false },
+        clientCapabilities: advertisedClientCapabilities(),
         clientInfo: { name: "machinectl", version: "0.4.0" },
       }, HANDSHAKE_TIMEOUT_MS) as Record<string, unknown>;
 

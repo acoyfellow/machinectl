@@ -43,7 +43,7 @@ test("cmux tools are opt-in", () => {
 test("cmux workspace discovery joins layout with the Pi hook store", async () => {
   const value = await fixture();
   try {
-    const result = invoke({ MACHINECTL_ENABLE_CMUX: "1", MACHINECTL_CMUX_BIN: value.binary, MACHINECTL_CMUX_PI_SESSION_STORE: value.store, MACHINECTL_CMUX_TEST_CALLS: value.calls }, "cmux_workspace_list", {});
+    const result = invoke({ MACHINECTL_ENABLE_CMUX: "1", MACHINECTL_CMUX_BIN: value.binary, MACHINECTL_CMUX_PI_SESSION_STORE: value.store, MACHINECTL_CMUX_TEST_CALLS: value.calls, MACHINECTL_CMUX_ENV_PASSTHROUGH: "MACHINECTL_CMUX_TEST_CALLS" }, "cmux_workspace_list", {});
     assert.equal(result.ok, true);
     assert.ok(result.names.includes("cmux_pi_prompt"));
     assert.equal(result.value.workspaces[0].id, workspaceId);
@@ -55,7 +55,7 @@ test("cmux workspace discovery joins layout with the Pi hook store", async () =>
 test("cmux adapter rejects stale workspace IDs before mutation", async () => {
   const value = await fixture();
   try {
-    const result = invoke({ MACHINECTL_ENABLE_CMUX: "1", MACHINECTL_CMUX_BIN: value.binary, MACHINECTL_CMUX_PI_SESSION_STORE: value.store, MACHINECTL_CMUX_TEST_CALLS: value.calls }, "cmux_workspace_focus", { workspaceId: "99999999-9999-4999-8999-999999999999" });
+    const result = invoke({ MACHINECTL_ENABLE_CMUX: "1", MACHINECTL_CMUX_BIN: value.binary, MACHINECTL_CMUX_PI_SESSION_STORE: value.store, MACHINECTL_CMUX_TEST_CALLS: value.calls, MACHINECTL_CMUX_ENV_PASSTHROUGH: "MACHINECTL_CMUX_TEST_CALLS" }, "cmux_workspace_focus", { workspaceId: "99999999-9999-4999-8999-999999999999" });
     assert.equal(result.ok, false);
     assert.match(result.error, /Unknown or stale/);
   } finally { await rm(value.root, { recursive: true, force: true }); }
@@ -113,7 +113,7 @@ test("surface-targeted ops resolve to the current live Pi despite many stale row
   const freshSessionId = "019e4aeb-bfd3-7cb8-82c3-9b8c799f4c6e";
   const value = await staleFixture({ freshSessionId });
   try {
-    const env = { MACHINECTL_ENABLE_CMUX: "1", MACHINECTL_CMUX_BIN: value.binary, MACHINECTL_CMUX_PI_SESSION_STORE: value.store, MACHINECTL_CMUX_TEST_CALLS: value.calls, MACHINECTL_CMUX_PS_BIN: value.psBin };
+    const env = { MACHINECTL_ENABLE_CMUX: "1", MACHINECTL_CMUX_BIN: value.binary, MACHINECTL_CMUX_PI_SESSION_STORE: value.store, MACHINECTL_CMUX_TEST_CALLS: value.calls, MACHINECTL_CMUX_ENV_PASSTHROUGH: "MACHINECTL_CMUX_TEST_CALLS", MACHINECTL_CMUX_PS_BIN: value.psBin };
     // Before the fix this threw "Multiple Pi sessions match; provide surfaceId."
     const tail = invoke(env, "cmux_surface_tail", { workspaceId, surfaceId, lines: 10 });
     assert.equal(tail.ok, true, tail.error);
@@ -129,7 +129,7 @@ test("surface-targeted ops resolve even WITHOUT surfaceId when only one row is l
   const freshSessionId = "019e4aeb-bfd3-7cb8-82c3-9b8c799f4c6e";
   const value = await staleFixture({ freshSessionId });
   try {
-    const env = { MACHINECTL_ENABLE_CMUX: "1", MACHINECTL_CMUX_BIN: value.binary, MACHINECTL_CMUX_PI_SESSION_STORE: value.store, MACHINECTL_CMUX_TEST_CALLS: value.calls, MACHINECTL_CMUX_PS_BIN: value.psBin };
+    const env = { MACHINECTL_ENABLE_CMUX: "1", MACHINECTL_CMUX_BIN: value.binary, MACHINECTL_CMUX_PI_SESSION_STORE: value.store, MACHINECTL_CMUX_TEST_CALLS: value.calls, MACHINECTL_CMUX_ENV_PASSTHROUGH: "MACHINECTL_CMUX_TEST_CALLS", MACHINECTL_CMUX_PS_BIN: value.psBin };
     const tail = invoke(env, "cmux_surface_tail", { workspaceId, lines: 10 });
     assert.equal(tail.ok, true, tail.error);
     assert.equal(tail.value.sessionId, freshSessionId);
@@ -140,7 +140,7 @@ test("explicit sessionId selects that live session directly", async () => {
   const freshSessionId = "019e4aeb-bfd3-7cb8-82c3-9b8c799f4c6e";
   const value = await staleFixture({ freshSessionId });
   try {
-    const env = { MACHINECTL_ENABLE_CMUX: "1", MACHINECTL_CMUX_BIN: value.binary, MACHINECTL_CMUX_PI_SESSION_STORE: value.store, MACHINECTL_CMUX_TEST_CALLS: value.calls, MACHINECTL_CMUX_PS_BIN: value.psBin };
+    const env = { MACHINECTL_ENABLE_CMUX: "1", MACHINECTL_CMUX_BIN: value.binary, MACHINECTL_CMUX_PI_SESSION_STORE: value.store, MACHINECTL_CMUX_TEST_CALLS: value.calls, MACHINECTL_CMUX_ENV_PASSTHROUGH: "MACHINECTL_CMUX_TEST_CALLS", MACHINECTL_CMUX_PS_BIN: value.psBin };
     const tail = invoke(env, "cmux_surface_tail", { workspaceId, surfaceId, sessionId: freshSessionId, lines: 10 });
     assert.equal(tail.ok, true, tail.error);
     assert.equal(tail.value.sessionId, freshSessionId);
@@ -151,7 +151,7 @@ test("an explicit sessionId pointing only at stale rows fails closed (never targ
   const freshSessionId = "019e4aeb-bfd3-7cb8-82c3-9b8c799f4c6e";
   const value = await staleFixture({ freshSessionId });
   try {
-    const env = { MACHINECTL_ENABLE_CMUX: "1", MACHINECTL_CMUX_BIN: value.binary, MACHINECTL_CMUX_PI_SESSION_STORE: value.store, MACHINECTL_CMUX_TEST_CALLS: value.calls, MACHINECTL_CMUX_PS_BIN: value.psBin };
+    const env = { MACHINECTL_ENABLE_CMUX: "1", MACHINECTL_CMUX_BIN: value.binary, MACHINECTL_CMUX_PI_SESSION_STORE: value.store, MACHINECTL_CMUX_TEST_CALLS: value.calls, MACHINECTL_CMUX_ENV_PASSTHROUGH: "MACHINECTL_CMUX_TEST_CALLS", MACHINECTL_CMUX_PS_BIN: value.psBin };
     const tail = invoke(env, "cmux_surface_tail", { workspaceId, surfaceId, sessionId: "dead0000-0000-4000-8000-000000000000", lines: 10 });
     assert.equal(tail.ok, false);
     assert.match(tail.error, /no longer live/);

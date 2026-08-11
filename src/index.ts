@@ -30,7 +30,7 @@
 // 60s of stable connection. Ctrl-C cleanly drains.
 
 import WebSocket from "ws";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { hostname } from "node:os";
 import { buildToolRegistry, shutdownTools } from "./tools.js";
 import { shutdownAgentSessions } from "./agent-sessions.js";
@@ -61,25 +61,42 @@ function logErr(...args: unknown[]) {
 /** Pull the cached Cloudflare Access JWT for URL_BASE via cloudflared.
  *  Returns null if cloudflared isn't installed or the user hasn't
  *  logged in yet (so the caller can emit a friendly error). */
+let cachedAccessToken: string | null | undefined;
+
 function getAccessToken(): string | null {
-  // Explicit override for dev / CI.
-  if (process.env.MACHINECTL_ACCESS_TOKEN) {
-    return process.env.MACHINECTL_ACCESS_TOKEN;
+  if (cachedAccessToken !== undefined) return cachedAccessToken;
+  const explicit = process.env.MACHINECTL_ACCESS_TOKEN;
+  if (explicit) {
+    cachedAccessToken = explicit;
+    delete process.env.MACHINECTL_ACCESS_TOKEN;
+    return cachedAccessToken;
   }
   try {
-    const tok = execSync(`cloudflared access token --app=${URL_BASE}`, {
+    const tok = execFileSync("cloudflared", ["access", "token", `--app=${URL_BASE}`], {
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "ignore"],
     }).trim();
-    return tok || null;
+    cachedAccessToken = tok || null;
+    return cachedAccessToken;
   } catch {
-    return null;
+    cachedAccessToken = null;
+    return cachedAccessToken;
   }
 }
 
 // ─── tool dispatch ───────────────────────────────────────────────────────
 
-const REGISTRY: RegisteredTool[] = buildToolRegistry();
+function buildRegistryOrExit(): RegisteredTool[] {
+  try {
+    return buildToolRegistry();
+  } catch (err) {
+    logErr("refusing to start: the configured capabilities are unsafe");
+    logErr((err as Error).message);
+    process.exit(1);
+  }
+}
+
+const REGISTRY: RegisteredTool[] = buildRegistryOrExit();
 
 function publishedToolsFor(reg: RegisteredTool[]): PublishedTool[] {
   return reg.map((t) => ({
@@ -311,6 +328,9 @@ function banner() {
   log(`machinectl daemon — machine: "${MACHINE_NAME}"`);
   log(`worker: ${URL_BASE}`);
   log(`tools registered: ${REGISTRY.map((t) => t.name).join(", ")}`);
+  if (!REGISTRY.some((t) => t.name === "shell")) {
+    log("[!] shell is terminal-equivalent and stays disabled until MACHINECTL_ENABLE_SHELL=1");
+  }
   if ((process.env.MACHINECTL_ENABLE_PI === "1" || process.env.MACHINECTL_ENABLE_PI === "true") && !process.env.MACHINECTL_ALLOWED_PATHS) {
     log("[!] pi RPC tools require MACHINECTL_ALLOWED_PATHS and were not enabled");
   }
