@@ -7,6 +7,13 @@ const MAX_ARG_BYTES = 256 * 1024;
 
 type JsonSchema = Record<string, unknown>;
 
+function declaredProperties(schema: JsonSchema): Record<string, JsonSchema> | null | undefined {
+  if (!Object.hasOwn(schema, "properties")) return undefined;
+  const properties = schema.properties;
+  if (!properties || typeof properties !== "object" || Array.isArray(properties)) return null;
+  return properties as Record<string, JsonSchema>;
+}
+
 function typeMatches(schema: JsonSchema, value: unknown): boolean {
   const declared = schema.type;
   if (typeof declared !== "string") return true;
@@ -26,8 +33,9 @@ function checkNode(schema: JsonSchema, value: unknown, path: string, depth: numb
   if (Array.isArray(schema.enum) && !schema.enum.some((allowed) => allowed === value)) {
     return { error: `${path} must be one of ${schema.enum.map((entry) => JSON.stringify(entry)).join(", ")}` };
   }
-  if (schema.type === "object") {
-    const properties = (schema.properties ?? {}) as Record<string, JsonSchema>;
+  const properties = declaredProperties(schema);
+  if (properties === null) return { error: `${path} has an invalid properties schema` };
+  if (schema.type === "object" && properties) {
     const declaredKeys = Object.keys(properties);
     const required = Array.isArray(schema.required) ? schema.required.map(String) : [];
     const record = value as Record<string, unknown>;
@@ -35,7 +43,7 @@ function checkNode(schema: JsonSchema, value: unknown, path: string, depth: numb
       if (!(key in record)) return { error: `${path}.${key} is required` };
     }
     for (const [key, entry] of Object.entries(record)) {
-      if (declaredKeys.length > 0 && !declaredKeys.includes(key)) {
+      if (!declaredKeys.includes(key)) {
         return { error: `${path}.${key} is not a declared parameter` };
       }
       const child = properties[key];
@@ -69,6 +77,8 @@ export function checkArgs(toolName: string, schema: unknown, args: unknown): Arg
   if (new TextEncoder().encode(serialized).byteLength > MAX_ARG_BYTES) {
     return { error: `${toolName} arguments exceed the ${MAX_ARG_BYTES} byte relay limit` };
   }
-  if (!schema || typeof schema !== "object") return null;
-  return checkNode(schema as JsonSchema, args, toolName, 0);
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) return { error: `${toolName} has no usable input schema` };
+  const root = schema as JsonSchema;
+  if (Object.keys(root).length === 0) return { error: `${toolName} has no usable input schema` };
+  return checkNode(root, args, toolName, 0);
 }

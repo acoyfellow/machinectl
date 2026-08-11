@@ -31,7 +31,7 @@ app.get("/health", (c) => c.json({ ok: true, name: "machinectl", codemode: true,
 
 function machineHost(c: Context<AppEnv>) {
   const identity = c.get("identity");
-  const id = c.env.MACHINE_HOST.idFromName(identity.email);
+  const id = c.env.MACHINE_HOST.idFromName(identity.sub);
   const locationHint = c.env.MACHINECTL_LOCATION_HINT as "wnam" | "enam" | "sam" | "weur" | "eeur" | "apac" | "oc" | "afr" | "me" | undefined;
   return c.env.MACHINE_HOST.get(id, locationHint ? { locationHint } : undefined);
 }
@@ -41,6 +41,7 @@ function internalRequest(c: Context<AppEnv>, path: string, includeBody = false) 
   const headers = new Headers(c.req.raw.headers);
   headers.set("X-Machinectl-Identity-Email", identity.email);
   headers.set("X-Machinectl-Identity-Sub", identity.sub);
+  headers.set("X-Machinectl-Identity-Expires", String(identity.expiresAt));
   return new Request(`http://internal${path}`, { method: c.req.method, headers, ...(includeBody ? { body: c.req.raw.body } : {}) });
 }
 
@@ -54,6 +55,7 @@ async function forwardedCall(c: Context<AppEnv>, tool: string, args: Record<stri
     "Content-Type": "application/json",
     "X-Machinectl-Identity-Email": identity.email,
     "X-Machinectl-Identity-Sub": identity.sub,
+    "X-Machinectl-Identity-Expires": String(identity.expiresAt),
   });
   return machineHost(c).fetch(new Request("http://internal/call", { method: "POST", headers, body: JSON.stringify({ tool, arguments: args }) })).then((response) => response.json<ToolResult>());
 }
@@ -64,6 +66,7 @@ function recordExecution(c: Context<AppEnv>, record: CodeModeExecutionRecord): v
     "Content-Type": "application/json",
     "X-Machinectl-Identity-Email": identity.email,
     "X-Machinectl-Identity-Sub": identity.sub,
+    "X-Machinectl-Identity-Expires": String(identity.expiresAt),
   });
   c.executionCtx.waitUntil(
     machineHost(c)

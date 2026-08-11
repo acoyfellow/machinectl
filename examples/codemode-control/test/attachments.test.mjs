@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { AttachmentStore, isImageDataUrl } from "../dist/test/attachments.js";
+import { AttachmentStore, isImageDataUrl, selectAttachmentDelivery } from "../dist/test/attachments.js";
 
 const png = (n) => "data:image/png;base64," + "A".repeat(n);
 
@@ -104,4 +104,14 @@ test("the manifest distinguishes retained from returned attachments", () => {
   assert.equal(store.manifest().length, 2, "both were captured during the execution");
   const returned = store.referenced({ shot: kept.attachmentId });
   assert.equal(returned.length, 1, "only one was surfaced to the caller");
+});
+
+test("size-capped attachments are retained but excluded from returned audit records", () => {
+  const first = { id: "att_first", mediaType: "image/png", byteLength: 7 * 1024 * 1024, dataUrl: png(4) };
+  const dropped = { id: "att_dropped", mediaType: "image/png", byteLength: 7 * 1024 * 1024, dataUrl: png(4) };
+  const manifest = [first, dropped].map(({ id, mediaType, byteLength }) => ({ attachmentId: id, mediaType, byteLength }));
+  const delivery = selectAttachmentDelivery(manifest, [first, dropped], 12 * 1024 * 1024);
+  assert.deepEqual(delivery.emitted.map((attachment) => attachment.id), [first.id]);
+  assert.deepEqual(delivery.attachmentsReturned, [first.id]);
+  assert.deepEqual(delivery.attachmentsRetainedUnreturned, [dropped.id]);
 });

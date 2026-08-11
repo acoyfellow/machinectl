@@ -3,7 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { z } from "zod";
 import type { PublishedTool } from "./machine-host";
-import { AttachmentStore, isImageDataUrl } from "./attachments";
+import { AttachmentStore, isImageDataUrl, selectAttachmentDelivery } from "./attachments";
 import { CallGovernor, catalogHash } from "./call-governor";
 import { checkArgs } from "./arg-guard";
 
@@ -24,6 +24,7 @@ export interface CodeModeExecutionRecord {
   toolsInvoked: readonly string[];
   attachments: readonly { attachmentId: string; mediaType: string; byteLength: number }[];
   attachmentsReturned: readonly string[];
+  attachmentsRetainedUnreturned: readonly string[];
 }
 
 export type RecordExecution = (record: CodeModeExecutionRecord) => void;
@@ -131,7 +132,9 @@ export async function handleCodeModeRequest(request: Request, env: CodeModeEnv, 
     const executionId = crypto.randomUUID();
     const startedAt = Date.now();
     const execution = await executor.execute(code, [{ name: "codemode", fns }]);
-    const referencedOnError = execution.error ? [] : attachments.referenced(execution.result);
+    const retainedAttachments = attachments.manifest();
+    const surfaced = execution.error ? [] : attachments.referenced(execution.result);
+    const delivery = selectAttachmentDelivery(retainedAttachments, surfaced, IMAGE_RESULT_MAX_BYTES);
     const record: CodeModeExecutionRecord = {
       executionId,
       toolsHash,
@@ -139,21 +142,18 @@ export async function handleCodeModeRequest(request: Request, env: CodeModeEnv, 
       ok: !execution.error,
       elapsedMs: Date.now() - startedAt,
       toolsInvoked: [...toolsInvoked],
-      attachments: attachments.manifest(),
-      attachmentsReturned: referencedOnError.map((entry) => entry.id),
+      attachments: retainedAttachments,
+      attachmentsReturned: delivery.attachmentsReturned,
+      attachmentsRetainedUnreturned: delivery.attachmentsRetainedUnreturned,
     };
     console.log("machinectl_codemode_execution", record);
     recordExecution?.(record);
     if (execution.error) return { isError: true, content: [{ type: "text" as const, text: execution.error }] };
-    const referenced = referencedOnError;
     const text = typeof execution.result === "string" ? execution.result : JSON.stringify(execution.result, null, 2);
     const parts: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [
       { type: "text" as const, text: text.slice(0, CODE_RESULT_MAX_CHARS) },
     ];
-    let imageBytes = 0;
-    for (const attachment of referenced) {
-      if (imageBytes + attachment.byteLength > IMAGE_RESULT_MAX_BYTES) break;
-      imageBytes += attachment.byteLength;
+    for (const attachment of delivery.emitted) {
       parts.push({ type: "image" as const, data: attachment.dataUrl.slice(attachment.dataUrl.indexOf(",") + 1), mimeType: attachment.mediaType });
     }
     return { content: parts };

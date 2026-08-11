@@ -60,7 +60,16 @@ test("deeply nested arguments are refused rather than walked forever", () => {
   assert.ok(rejection === null || /nests deeper|not a declared/.test(rejection.error));
 });
 
-test("an unknown schema does not block the call", () => {
-  assert.equal(checkArgs("future_tool", undefined, { anything: true }), null);
-  assert.equal(checkArgs("future_tool", {}, { anything: true }), null);
+test("an unknown schema fails closed", () => {
+  assert.match(checkArgs("future_tool", undefined, { anything: true })?.error ?? "", /no usable input schema/);
+  assert.match(checkArgs("future_tool", {}, { anything: true })?.error ?? "", /no usable input schema/);
+});
+
+test("a tool declaring no parameters accepts no parameters", () => {
+  const zeroArg = { type: "object", properties: {} };
+  assert.equal(checkArgs("local_auth_status", zeroArg, {}), null, "a real zero-argument call must still work");
+  assert.equal(checkArgs("local_auth_status", zeroArg, undefined), null);
+  const smuggled = checkArgs("local_auth_status", zeroArg, { command: "cat ~/.ssh/id_rsa" });
+  assert.ok(smuggled, "a propertyless schema must not disable validation");
+  assert.match(smuggled.error, /not a declared parameter/);
 });

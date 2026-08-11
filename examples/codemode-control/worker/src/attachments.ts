@@ -11,6 +11,24 @@ export interface AttachmentMetadata {
   byteLength: number;
 }
 
+export function selectAttachmentDelivery(manifest: readonly AttachmentMetadata[], surfaced: readonly Attachment[], maxBytes: number) {
+  const emitted: Attachment[] = [];
+  let imageBytes = 0;
+  for (const attachment of surfaced) {
+    if (imageBytes + attachment.byteLength > maxBytes) break;
+    imageBytes += attachment.byteLength;
+    emitted.push(attachment);
+  }
+  const returnedIds = new Set(emitted.map((attachment) => attachment.id));
+  return {
+    emitted,
+    attachmentsReturned: emitted.map((attachment) => attachment.id),
+    attachmentsRetainedUnreturned: manifest
+      .filter((attachment) => !returnedIds.has(attachment.attachmentId))
+      .map((attachment) => attachment.attachmentId),
+  };
+}
+
 const ITEM_LIMIT = 8;
 const AGGREGATE_BYTE_LIMIT = 24 * 1024 * 1024;
 const DATA_URL_RE = /^data:(image\/(?:png|jpeg|webp|gif));base64,([A-Za-z0-9+/=\r\n]+)$/;

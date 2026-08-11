@@ -9,7 +9,9 @@ const TOOL_LIMIT = 64;
 const CATALOG_BYTE_LIMIT = 128 * 1024;
 const RESULT_BYTE_LIMIT = 512 * 1024;
 const SCREENSHOT_RESULT_BYTE_LIMIT = 12 * 1024 * 1024;
-const IMAGE_DATA_URL_RE = /^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/=\r\n]+$/;
+const SAFE_RASTER_DATA_URL_RE = /^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/=\r\n]+$/i;
+const GENERIC_MEDIA_DATA_URL_RE = /^data:(?:image|video|audio)\//i;
+const RASTER_RESULT_BYTE_LIMIT = 64 * 1024 * 1024;
 
 export function byteLength(value: unknown): number {
   return new TextEncoder().encode(typeof value === "string" ? value : JSON.stringify(value)).byteLength;
@@ -22,9 +24,18 @@ export function safeText(value: string, maxBytes: number): string {
 
 export function sanitizeSuccessResult(tool: string, content: string): ToolResult {
   if (tool === "screenshot") {
-    if (!IMAGE_DATA_URL_RE.test(content)) return { ok: false, error: "invalid screenshot response" };
+    if (!SAFE_RASTER_DATA_URL_RE.test(content)) return { ok: false, error: "invalid screenshot response" };
     if (byteLength(content) > SCREENSHOT_RESULT_BYTE_LIMIT) return { ok: false, error: "screenshot response exceeds relay limit" };
     return { ok: true, content };
+  }
+  if (SAFE_RASTER_DATA_URL_RE.test(content)) {
+    if (byteLength(content) > RASTER_RESULT_BYTE_LIMIT) {
+      return { ok: false, error: `${tool} raster response exceeds the ${RASTER_RESULT_BYTE_LIMIT} byte relay limit and was not truncated, because truncated raster data does not decode` };
+    }
+    return { ok: true, content };
+  }
+  if (GENERIC_MEDIA_DATA_URL_RE.test(content)) {
+    return { ok: false, error: `${tool} returned an unsupported or malformed media data URL` };
   }
   return { ok: true, content: safeText(content, RESULT_BYTE_LIMIT) };
 }
@@ -34,7 +45,8 @@ export function validateTools(tools: unknown): tools is PublishedTool[] {
   return tools.every((tool) => {
     if (!tool || typeof tool !== "object") return false;
     const value = tool as Record<string, unknown>;
-    return typeof value.name === "string" && /^[a-zA-Z0-9_.-]{1,80}$/.test(value.name) && typeof value.description === "string" && value.description.length <= 2_000 && !!value.inputSchema && typeof value.inputSchema === "object";
+    const schema = value.inputSchema;
+    return typeof value.name === "string" && /^[a-zA-Z0-9_.-]{1,80}$/.test(value.name) && typeof value.description === "string" && value.description.length <= 2_000 && !!schema && typeof schema === "object" && !Array.isArray(schema) && Object.keys(schema).length > 0;
   });
 }
 
@@ -59,6 +71,8 @@ export function summarizeArgs(tool: string, args: Record<string, unknown>) {
           ? ["harnessId", "id", "command", "eventLimit", "tailChars"]
           : [];
   const summary: Record<string, unknown> = {};
-  for (const key of allowedKeys) if (key in args) summary[key] = args[key];
-  return { keys: Object.keys(args), byteLength: byteLength(args), safe: summary, contentRedacted: Object.keys(args).some((key) => !allowedKeys.includes(key)) };
+  for (const key of allowedKeys) {
+    if (key in args && !["key", "modifiers", "command"].includes(key)) summary[key] = args[key];
+  }
+  return { keyCount: Object.keys(args).length, byteLength: byteLength(args), safe: summary, contentRedacted: true };
 }
