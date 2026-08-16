@@ -1,0 +1,19 @@
+test/cmux.test.mjs
+  s_952b167abec97a::t_ca59daf64bb358 52-58
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e45c51a9eead4f0d7069854a98bb518fc6445235",
+  "prompts": {},
+  "sessions": {
+    "s_952b167abec97a": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "019fd391-aa11-7719-9c9c-d9bc68c3f904",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Jordan Coeyman <jcoeyman@cloudflare.com>"
+    }
+  }
+}
