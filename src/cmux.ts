@@ -120,20 +120,30 @@ async function snapshot() {
       description: workspace.description ?? null,
       selected: Boolean(workspace.selected || workspace.active),
       surfaces: surfaces.map((surface) => ({ id: surface.id, ref: surface.ref ?? null, title: surface.title ?? null, type: surface.type ?? "unknown", selected: Boolean(surface.selected || surface.active) })),
-      piSessions: sessions.map(publicPiSession),
+      piSessions: sessions.map((session) => publicPiSession(session, Boolean(session.pid && processIsPi(session.pid)))),
     };
   });
 }
 
-function publicPiSession(session: PiSession) {
+function publicPiSession(session: PiSession, livePid: boolean) {
+  const lifecycle = session.agentLifecycle ?? "unknown";
+  const dispatchable = livePid && lifecycle !== "unknown";
+  const reason = !livePid
+    ? "process-not-live"
+    : lifecycle === "unknown"
+      ? "lifecycle-unknown"
+      : null;
   return {
     sessionId: session.sessionId,
     surfaceId: session.surfaceId,
     cwd: session.cwd ?? null,
-    lifecycle: session.agentLifecycle ?? "unknown",
+    lifecycle,
     runtimeStatus: session.runtimeStatus ?? "unknown",
     lastAssistantText: session.lastBody?.slice(-4_000) ?? null,
     updatedAt: session.updatedAt ? new Date(session.updatedAt * 1_000).toISOString() : null,
+    dispatchable,
+    reason,
+    generation: session.updatedAt ?? 0,
   };
 }
 

@@ -49,6 +49,13 @@ test("cmux workspace discovery joins layout with the Pi hook store", async () =>
     assert.equal(result.value.workspaces[0].id, workspaceId);
     assert.equal(result.value.workspaces[0].piSessions[0].surfaceId, surfaceId);
     assert.equal(result.value.workspaces[0].piSessions[0].lastAssistantText, "done");
+    assert.equal(typeof result.value.workspaces[0].piSessions[0].dispatchable, "boolean");
+    assert.ok("reason" in result.value.workspaces[0].piSessions[0]);
+    assert.equal(typeof result.value.workspaces[0].piSessions[0].generation, "number");
+    const listed = result.value.workspaces[0];
+    const status = invoke({ MACHINECTL_ENABLE_CMUX: "1", MACHINECTL_CMUX_BIN: value.binary, MACHINECTL_CMUX_PI_SESSION_STORE: value.store, MACHINECTL_CMUX_TEST_CALLS: value.calls, MACHINECTL_CMUX_ENV_PASSTHROUGH: "MACHINECTL_CMUX_TEST_CALLS" }, "cmux_workspace_status", { workspaceId });
+    assert.equal(status.ok, true);
+    assert.deepEqual(status.value.workspace.piSessions, listed.piSessions);
   } finally { await rm(value.root, { recursive: true, force: true }); }
 });
 
