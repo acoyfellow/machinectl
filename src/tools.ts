@@ -271,7 +271,13 @@ const screenshotTool = tool(
         captureArgs.push(capturedPath);
         const captureBin = process.env.MACHINECTL_SCREENSHOT_BIN || "/usr/sbin/screencapture";
         const result = await run(captureBin, captureArgs);
-        if (result.code !== 0) throw new Error(result.stderr || "screenshot command failed");
+        if (result.code !== 0) {
+          const detail = (result.stderr || result.stdout || "").toLowerCase();
+          if (/could not create image|not authorized|tcc|permission/.test(detail)) {
+            throw new Error("screenshot failed: Screen Recording TCC denied. Grant Screen Recording to the machinectl Node process, fully quit and relaunch, then retry. loginwindow is not a lock screen.");
+          }
+          throw new Error(result.stderr || "screenshot command failed");
+        }
         const capturedBytes = await fsReadFile(capturedPath).catch(() => { throw new Error("screenshot produced no output file"); });
         if (capturedBytes.length === 0) throw new Error("screenshot produced an empty file");
         if (pngHasVisibleColor(capturedBytes) === false) throw new Error("screenshot produced an all-black frame. Grant Screen Recording access to the machinectl Node process in System Settings, restart machinectl, and retry.");
