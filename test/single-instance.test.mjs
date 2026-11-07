@@ -44,11 +44,11 @@ function waitForFile(path, timeoutMs = 10_000) {
 
 test("a lock records the holder and the release removes the file", async () => {
   await withStateDir(async () => {
-    const lock = acquireInstanceLock("jcoeyman-macbook", "https://my.ax.cloudflare.dev");
+    const lock = acquireInstanceLock("test-macbook", "https://relay.example.com");
     const holder = JSON.parse(readFileSync(lock.path, "utf-8"));
     assert.equal(holder.pid, process.pid);
-    assert.equal(holder.name, "jcoeyman-macbook");
-    assert.equal(holder.url, "https://my.ax.cloudflare.dev");
+    assert.equal(holder.name, "test-macbook");
+    assert.equal(holder.url, "https://relay.example.com");
     lock.release();
     assert.equal(existsSync(lock.path), false);
   });
@@ -56,12 +56,12 @@ test("a lock records the holder and the release removes the file", async () => {
 
 test("a live holder blocks a second daemon with the same identity", async () => {
   await withStateDir(async () => {
-    const path = instanceLockPath("jcoeyman-macbook", "https://my.ax.cloudflare.dev");
+    const path = instanceLockPath("test-macbook", "https://relay.example.com");
     const rival = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { stdio: "ignore" });
     try {
-      seedLock(path, { pid: rival.pid, name: "jcoeyman-macbook", url: "https://my.ax.cloudflare.dev", startedAt: new Date().toISOString() });
+      seedLock(path, { pid: rival.pid, name: "test-macbook", url: "https://relay.example.com", startedAt: new Date().toISOString() });
       assert.throws(
-        () => acquireInstanceLock("jcoeyman-macbook", "https://my.ax.cloudflare.dev"),
+        () => acquireInstanceLock("test-macbook", "https://relay.example.com"),
         (err) => err instanceof InstanceLockedError
           && /already controls the identity/.test(err.message)
           && err.holder.pid === rival.pid,
@@ -75,9 +75,9 @@ test("a live holder blocks a second daemon with the same identity", async () => 
 
 test("a lock from a dead process is reclaimed", async () => {
   await withStateDir(async () => {
-    const path = instanceLockPath("jcoeyman-macbook", "https://my.ax.cloudflare.dev");
-    seedLock(path, { pid: 999_999_998, name: "jcoeyman-macbook", url: "https://my.ax.cloudflare.dev", startedAt: new Date().toISOString() });
-    const lock = acquireInstanceLock("jcoeyman-macbook", "https://my.ax.cloudflare.dev");
+    const path = instanceLockPath("test-macbook", "https://relay.example.com");
+    seedLock(path, { pid: 999_999_998, name: "test-macbook", url: "https://relay.example.com", startedAt: new Date().toISOString() });
+    const lock = acquireInstanceLock("test-macbook", "https://relay.example.com");
     assert.equal(JSON.parse(readFileSync(lock.path, "utf-8")).pid, process.pid);
     lock.release();
   });
@@ -85,9 +85,9 @@ test("a lock from a dead process is reclaimed", async () => {
 
 test("a damaged lock file does not stop a daemon", async () => {
   await withStateDir(async () => {
-    const path = instanceLockPath("jcoeyman-macbook", "https://my.ax.cloudflare.dev");
+    const path = instanceLockPath("test-macbook", "https://relay.example.com");
     seedLock(path, "this is not json\n");
-    const lock = acquireInstanceLock("jcoeyman-macbook", "https://my.ax.cloudflare.dev");
+    const lock = acquireInstanceLock("test-macbook", "https://relay.example.com");
     assert.equal(JSON.parse(readFileSync(lock.path, "utf-8")).pid, process.pid);
     lock.release();
   });
@@ -95,9 +95,9 @@ test("a damaged lock file does not stop a daemon", async () => {
 
 test("a different name and a different relay each get a separate lock", async () => {
   await withStateDir(async () => {
-    const prod = acquireInstanceLock("jcoeyman-macbook", "https://my.ax.cloudflare.dev");
-    const otherName = acquireInstanceLock("local-mac", "https://my.ax.cloudflare.dev");
-    const otherRelay = acquireInstanceLock("jcoeyman-macbook", "http://127.0.0.1:8789");
+    const prod = acquireInstanceLock("test-macbook", "https://relay.example.com");
+    const otherName = acquireInstanceLock("local-mac", "https://relay.example.com");
+    const otherRelay = acquireInstanceLock("test-macbook", "http://127.0.0.1:8789");
     assert.equal(new Set([prod.path, otherName.path, otherRelay.path]).size, 3);
     prod.release();
     otherName.release();
@@ -107,11 +107,11 @@ test("a different name and a different relay each get a separate lock", async ()
 
 test("a release does not remove a lock that another process owns", async () => {
   await withStateDir(async () => {
-    const lock = acquireInstanceLock("jcoeyman-macbook", "https://my.ax.cloudflare.dev");
+    const lock = acquireInstanceLock("test-macbook", "https://relay.example.com");
     writeFileSync(lock.path, JSON.stringify({
       pid: process.pid + 1,
-      name: "jcoeyman-macbook",
-      url: "https://my.ax.cloudflare.dev",
+      name: "test-macbook",
+      url: "https://relay.example.com",
       startedAt: new Date().toISOString(),
     }) + "\n");
     lock.release();
