@@ -49,6 +49,6 @@ export type LaptopFrame =
 
 /** DOWN: Worker → daemon. */
 export type WorkerFrame =
-  | { type: "call"; id: string; tool: string; args: Record<string, unknown> }
+  | { type: "call"; id: string; opId?: string; tool: string; args: Record<string, unknown> }
   | { type: "ping" }
   | { type: "pong" };
