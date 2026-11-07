@@ -36,6 +36,9 @@ import { buildToolRegistry, shutdownTools } from "./tools.js";
 import { shutdownAgentSessions } from "./agent-sessions.js";
 import { acquireInstanceLock, InstanceLockedError, type InstanceLock } from "./single-instance.js";
 import type { LaptopFrame, PublishedTool, RegisteredTool, WorkerFrame } from "./protocol.js";
+import { OpLedger } from "./op-ledger.js";
+
+const opLedger = new OpLedger();
 
 // ─── config ──────────────────────────────────────────────────────────────
 const URL_BASE = process.env.MACHINECTL_URL ?? "";
@@ -252,7 +255,9 @@ async function connectOnce(): Promise<void> {
       switch (frame.type) {
         case "call": {
           const startedAt = Date.now();
-          const result = await dispatchCall(frame.tool, frame.args);
+          const run = opLedger.run(frame.opId, () => dispatchCall(frame.tool, frame.args));
+          if (run.replayed) log(`call ${frame.tool} opId ${frame.opId} already ran; replaying its result`);
+          const result = await run.promise;
           const durationMs = Date.now() - startedAt;
           const out: LaptopFrame = result.ok
             ? { type: "result", id: frame.id, ok: true, content: result.content, metrics: { toolExecMs: durationMs, resultBytes: Buffer.byteLength(result.content) } }
