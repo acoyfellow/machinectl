@@ -51,6 +51,8 @@ const URL_BASE = process.env.MACHINECTL_URL ?? MACHINE_CONFIG?.url ?? "";
 const MACHINE_NAME = MACHINE_CONFIG?.name ?? process.env.MACHINECTL_NAME ?? hostname();
 const RECONNECT_MIN_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
+const APPROVAL_POLL_MS = 3_000;
+let holdBackoff = false;
 const STABLE_CONNECTION_MS = 60_000;
 const PING_INTERVAL_MS = 20_000;
 const LOG_TIMESTAMP = process.env.MACHINECTL_LOG_TIMESTAMP === "1";
@@ -322,7 +324,8 @@ async function connectWith(wsUrl: string, authHeaders: Record<string, string>): 
           shuttingDown = true;
         } else {
           logErr("waiting for approval in my-ax under Settings > Connections");
-          currentBackoff = RECONNECT_MAX_MS;
+          currentBackoff = APPROVAL_POLL_MS;
+          holdBackoff = true;
         }
       }
       ws.terminate();
@@ -354,7 +357,8 @@ async function runForever(): Promise<void> {
       }, currentBackoff);
     });
     if (shuttingDown) break;
-    currentBackoff = Math.min(currentBackoff * 2, RECONNECT_MAX_MS);
+    if (holdBackoff) holdBackoff = false;
+    else currentBackoff = Math.min(currentBackoff * 2, RECONNECT_MAX_MS);
   }
   log("shutting down");
 }
