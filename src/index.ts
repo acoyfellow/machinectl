@@ -36,13 +36,19 @@ import { buildToolRegistry, shutdownTools } from "./tools.js";
 import { shutdownAgentSessions } from "./agent-sessions.js";
 import { acquireInstanceLock, InstanceLockedError, type InstanceLock } from "./single-instance.js";
 import type { LaptopFrame, PublishedTool, RegisteredTool, WorkerFrame } from "./protocol.js";
+import { buildHandTools, type HandClient } from "./hand-adapter.js";
+import { MACHINE_LOGGED_OUT_CLOSE_CODE, machineConnectUrl, readMachineConfig, refusalIsFinal, type MachineConfig } from "./pairing.js";
+import { runCommand } from "./commands.js";
 import { OpLedger } from "./op-ledger.js";
 
 const opLedger = new OpLedger();
 
 // ─── config ──────────────────────────────────────────────────────────────
-const URL_BASE = process.env.MACHINECTL_URL ?? "";
-const MACHINE_NAME = process.env.MACHINECTL_NAME ?? hostname();
+const COMMAND_EXIT = await runCommand(process.argv.slice(2));
+if (COMMAND_EXIT !== null) process.exit(COMMAND_EXIT);
+const MACHINE_CONFIG: MachineConfig | null = process.env.MACHINECTL_URL ? null : readMachineConfig();
+const URL_BASE = process.env.MACHINECTL_URL ?? MACHINE_CONFIG?.url ?? "";
+const MACHINE_NAME = MACHINE_CONFIG?.name ?? process.env.MACHINECTL_NAME ?? hostname();
 const RECONNECT_MIN_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
 const STABLE_CONNECTION_MS = 60_000;
@@ -99,7 +105,9 @@ function buildRegistryOrExit(): RegisteredTool[] {
   }
 }
 
-const REGISTRY: RegisteredTool[] = buildRegistryOrExit();
+const HAND = await buildHandTools();
+const HAND_CLIENT: HandClient | null = HAND.client;
+const REGISTRY: RegisteredTool[] = [...buildRegistryOrExit(), ...HAND.tools];
 
 function publishedToolsFor(reg: RegisteredTool[]): PublishedTool[] {
   return reg.map((t) => ({
@@ -172,6 +180,7 @@ function requestShutdown(reason: string) {
   cancelReconnectTimer();
   closeActiveSocket();
   shutdownTools();
+  HAND_CLIENT?.stop();
   shutdownAgentSessions(`machinectl received ${reason}`);
   releaseInstanceLock();
 }
@@ -196,12 +205,15 @@ async function connectOnce(): Promise<void> {
     );
   }
 
-  const wsUrl =
-    URL_BASE.replace(/^http(s?):/, "ws$1:") + "/machinectl/connect";
+  const wsUrl = MACHINE_CONFIG ? machineConnectUrl(URL_BASE, MACHINE_CONFIG.name) : URL_BASE.replace(/^http(s?):/, "ws$1:") + "/machinectl/connect";
+  return connectWith(wsUrl, { "cf-access-token": accessToken });
+}
+
+async function connectWith(wsUrl: string, authHeaders: Record<string, string>): Promise<void> {
   log(`connecting to ${wsUrl} as "${MACHINE_NAME}"`);
 
   const ws = new WebSocket(wsUrl, {
-    headers: { "cf-access-token": accessToken },
+    headers: authHeaders,
     // 10s handshake timeout — fast failure beats waiting for TCP to give up.
     handshakeTimeout: 10_000,
   });
@@ -294,7 +306,27 @@ async function connectOnce(): Promise<void> {
         connectionStableTimer = null;
       }
       log(`disconnected (code ${code}, reason: ${reason?.toString() || "—"})`);
+      if (code === MACHINE_LOGGED_OUT_CLOSE_CODE) {
+        logErr("this machine was logged out in my-ax; it stays off until you allow it again there");
+        shuttingDown = true;
+      }
       done();
+    });
+
+    ws.on("unexpected-response", (_request, response) => {
+      const stateHeader = response.headers["x-machine-state"];
+      const machineState = Array.isArray(stateHeader) ? stateHeader[0] : stateHeader;
+      if (refusalIsFinal(response.statusCode ?? 0, machineState)) {
+        if (machineState === "logged_out") {
+          logErr("this machine was logged out in my-ax; it stays off until you allow it again there");
+          shuttingDown = true;
+        } else {
+          logErr("waiting for approval in my-ax under Settings > Connections");
+          currentBackoff = RECONNECT_MAX_MS;
+        }
+      }
+      ws.terminate();
+      done(new Error(`connect refused with HTTP ${response.statusCode}`));
     });
 
     ws.on("error", (err) => {
@@ -333,6 +365,8 @@ function banner() {
   log(`machinectl daemon — machine: "${MACHINE_NAME}"`);
   log(`worker: ${URL_BASE}`);
   log(`tools registered: ${REGISTRY.map((t) => t.name).join(", ")}`);
+  log(HAND.note);
+  if (MACHINE_CONFIG) log(`signed in as machine "${MACHINE_CONFIG.name}" with your my-ax login`);
   if (!REGISTRY.some((t) => t.name === "shell")) {
     log("[!] shell is terminal-equivalent and stays disabled until MACHINECTL_ENABLE_SHELL=1");
   }
@@ -358,7 +392,12 @@ process.on("exit", releaseInstanceLock);
 
 banner();
 
-runForever().catch((err) => {
+runForever().then(() => {
+  HAND_CLIENT?.stop();
+  shutdownTools();
+  releaseInstanceLock();
+  process.exit(0);
+}).catch((err) => {
   logErr("fatal:", err);
   process.exit(1);
 });
