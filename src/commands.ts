@@ -39,7 +39,12 @@ export function launchAgentEnv(shell: boolean): Record<string, string> {
     PATH: process.env.PATH ?? "/usr/bin:/bin",
     HOME: homedir(),
     MACHINECTL_ENABLE_HAND: "1",
+    MACHINECTL_LOG_TIMESTAMP: "1",
   };
+  for (const key of ["NODE_EXTRA_CA_CERTS", "NODE_USE_SYSTEM_CA"]) {
+    const value = process.env[key];
+    if (value) env[key] = value;
+  }
   if (shell) Object.assign(env, { MACHINECTL_ENABLE_SHELL: "1", MACHINECTL_ALLOWED_PATHS: homedir() });
   return env;
 }

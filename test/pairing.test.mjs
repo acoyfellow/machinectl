@@ -84,3 +84,16 @@ test("hand tools are published with a prefix and forward calls to hand", async (
     client.stop();
   }
 });
+
+test("the login item keeps the WARP certificate settings and turns on log timestamps", () => {
+  const saved = process.env.NODE_EXTRA_CA_CERTS;
+  process.env.NODE_EXTRA_CA_CERTS = "/tmp/warp.pem";
+  try {
+    const env = launchAgentEnv(false);
+    assert.equal(env.NODE_EXTRA_CA_CERTS, "/tmp/warp.pem");
+    assert.equal(env.MACHINECTL_LOG_TIMESTAMP, "1");
+  } finally {
+    if (saved === undefined) delete process.env.NODE_EXTRA_CA_CERTS;
+    else process.env.NODE_EXTRA_CA_CERTS = saved;
+  }
+});
