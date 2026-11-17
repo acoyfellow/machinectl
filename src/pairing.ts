@@ -1,53 +1,54 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
-export interface PairedMachine {
+export interface MachineConfig {
   url: string;
   name: string;
-  credential: string;
 }
 
 export const LAUNCH_AGENT_LABEL = "dev.machinectl.daemon";
+export const MACHINE_LOGGED_OUT_CLOSE_CODE = 4401;
+export const MACHINE_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
 
 export function configDir(): string {
   return process.env.MACHINECTL_CONFIG_DIR ?? join(homedir(), ".config", "machinectl");
 }
 
-export function pairedMachinePath(): string {
+export function machineConfigPath(): string {
   return join(configDir(), "machine.json");
 }
 
-export function readPairedMachine(): PairedMachine | null {
-  const path = pairedMachinePath();
+export function readMachineConfig(): MachineConfig | null {
+  const path = machineConfigPath();
   if (!existsSync(path)) return null;
-  const value = JSON.parse(readFileSync(path, "utf8")) as Partial<PairedMachine>;
-  if (typeof value.url !== "string" || typeof value.name !== "string" || typeof value.credential !== "string") return null;
-  return { url: value.url, name: value.name, credential: value.credential };
+  const value = JSON.parse(readFileSync(path, "utf8")) as Partial<MachineConfig>;
+  if (typeof value.url !== "string" || typeof value.name !== "string" || !MACHINE_NAME_PATTERN.test(value.name)) return null;
+  return { url: value.url.replace(/\/+$/, ""), name: value.name };
 }
 
-function writePairedMachine(machine: PairedMachine): string {
-  const path = pairedMachinePath();
+export function writeMachineConfig(machine: MachineConfig): string {
+  const path = machineConfigPath();
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  writeFileSync(path, JSON.stringify(machine, null, 2), { mode: 0o600 });
-  chmodSync(path, 0o600);
+  writeFileSync(path, JSON.stringify({ url: machine.url.replace(/\/+$/, ""), name: machine.name }, null, 2), { mode: 0o600 });
   return path;
 }
 
-export async function pairMachine(url: string, code: string, name: string, fetcher: typeof fetch = fetch): Promise<PairedMachine> {
-  const base = url.replace(/\/+$/, "");
-  const response = await fetcher(`${base}/machines/pair`, {
+export function machineConnectUrl(base: string, name: string): string {
+  return `${base.replace(/\/+$/, "").replace(/^http(s?):/, "ws$1:")}/machinectl/connect?machine=${encodeURIComponent(name)}`;
+}
+
+export function refusalIsFinal(status: number, stateHeader: string | undefined): boolean {
+  return status === 403 && (stateHeader === "pending" || stateHeader === "logged_out");
+}
+
+export async function logOutMachine(base: string, name: string, accessToken: string, fetcher: typeof fetch = fetch): Promise<void> {
+  const response = await fetcher(`${base.replace(/\/+$/, "")}/api/machines/${encodeURIComponent(name)}/logout`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ code, name }),
+    headers: { "cf-access-token": accessToken },
   });
-  const body = (await response.json().catch(() => null)) as { ok?: boolean; name?: string; credential?: string; error?: { message?: string } } | null;
-  if (!response.ok || !body?.ok || !body.name || !body.credential) {
-    throw new Error(`Pairing failed: ${body?.error?.message ?? `HTTP ${response.status}`}`);
-  }
-  const machine = { url: base, name: body.name, credential: body.credential };
-  writePairedMachine(machine);
-  return machine;
+  const body = (await response.json().catch(() => null)) as { ok?: boolean; error?: { message?: string } } | null;
+  if (!response.ok || !body?.ok) throw new Error(`Log out failed: ${body?.error?.message ?? `HTTP ${response.status}`}`);
 }
 
 export function launchAgentPlist(nodePath: string, entryPath: string, logDir: string, env: Record<string, string>): string {
@@ -74,7 +75,10 @@ ${envEntries}
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
-    <true/>
+    <dict>
+      <key>SuccessfulExit</key>
+      <false/>
+    </dict>
     <key>StandardOutPath</key>
     <string>${escapeXml(join(logDir, "machinectl.log"))}</string>
     <key>StandardErrorPath</key>

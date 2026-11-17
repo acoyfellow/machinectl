@@ -37,7 +37,7 @@ import { shutdownAgentSessions } from "./agent-sessions.js";
 import { acquireInstanceLock, InstanceLockedError, type InstanceLock } from "./single-instance.js";
 import type { LaptopFrame, PublishedTool, RegisteredTool, WorkerFrame } from "./protocol.js";
 import { buildHandTools, type HandClient } from "./hand-adapter.js";
-import { readPairedMachine, type PairedMachine } from "./pairing.js";
+import { MACHINE_LOGGED_OUT_CLOSE_CODE, machineConnectUrl, readMachineConfig, refusalIsFinal, type MachineConfig } from "./pairing.js";
 import { runCommand } from "./commands.js";
 import { OpLedger } from "./op-ledger.js";
 
@@ -46,10 +46,9 @@ const opLedger = new OpLedger();
 // ─── config ──────────────────────────────────────────────────────────────
 const COMMAND_EXIT = await runCommand(process.argv.slice(2));
 if (COMMAND_EXIT !== null) process.exit(COMMAND_EXIT);
-const PAIRED: PairedMachine | null = process.env.MACHINECTL_URL ? null : readPairedMachine();
-const URL_BASE = process.env.MACHINECTL_URL ?? PAIRED?.url ?? "";
-const MACHINE_NAME = PAIRED?.name ?? process.env.MACHINECTL_NAME ?? hostname();
-const MACHINE_REVOKED_CLOSE_CODE = 4401;
+const MACHINE_CONFIG: MachineConfig | null = process.env.MACHINECTL_URL ? null : readMachineConfig();
+const URL_BASE = process.env.MACHINECTL_URL ?? MACHINE_CONFIG?.url ?? "";
+const MACHINE_NAME = MACHINE_CONFIG?.name ?? process.env.MACHINECTL_NAME ?? hostname();
 const RECONNECT_MIN_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
 const STABLE_CONNECTION_MS = 60_000;
@@ -197,7 +196,6 @@ async function connectOnce(): Promise<void> {
   if (!URL_BASE) {
     throw new Error("MACHINECTL_URL is required. Set it to your trusted compatible Worker endpoint, e.g. https://machinectl.example.com.");
   }
-  if (PAIRED) return connectWith(URL_BASE.replace(/^http(s?):/, "ws$1:") + "/machines/connect", { Authorization: `Bearer ${PAIRED.credential}` });
   const accessToken = getAccessToken();
   if (!accessToken) {
     throw new Error(
@@ -207,7 +205,8 @@ async function connectOnce(): Promise<void> {
     );
   }
 
-  return connectWith(URL_BASE.replace(/^http(s?):/, "ws$1:") + "/machinectl/connect", { "cf-access-token": accessToken });
+  const wsUrl = MACHINE_CONFIG ? machineConnectUrl(URL_BASE, MACHINE_CONFIG.name) : URL_BASE.replace(/^http(s?):/, "ws$1:") + "/machinectl/connect";
+  return connectWith(wsUrl, { "cf-access-token": accessToken });
 }
 
 async function connectWith(wsUrl: string, authHeaders: Record<string, string>): Promise<void> {
@@ -307,17 +306,24 @@ async function connectWith(wsUrl: string, authHeaders: Record<string, string>): 
         connectionStableTimer = null;
       }
       log(`disconnected (code ${code}, reason: ${reason?.toString() || "—"})`);
-      if (code === MACHINE_REVOKED_CLOSE_CODE) {
-        logErr("this machine was revoked in my-ax; pair it again with `machinectl pair <code> --url <my-ax url>`");
+      if (code === MACHINE_LOGGED_OUT_CLOSE_CODE) {
+        logErr("this machine was logged out in my-ax; it stays off until you allow it again there");
         shuttingDown = true;
       }
       done();
     });
 
     ws.on("unexpected-response", (_request, response) => {
-      if (PAIRED && response.statusCode === 401) {
-        logErr("my-ax refused this machine's credential (revoked or unknown); pair it again");
-        shuttingDown = true;
+      const stateHeader = response.headers["x-machine-state"];
+      const machineState = Array.isArray(stateHeader) ? stateHeader[0] : stateHeader;
+      if (refusalIsFinal(response.statusCode ?? 0, machineState)) {
+        if (machineState === "logged_out") {
+          logErr("this machine was logged out in my-ax; it stays off until you allow it again there");
+          shuttingDown = true;
+        } else {
+          logErr("waiting for approval in my-ax under Settings > Connections");
+          currentBackoff = RECONNECT_MAX_MS;
+        }
       }
       ws.terminate();
       done(new Error(`connect refused with HTTP ${response.statusCode}`));
@@ -360,7 +366,7 @@ function banner() {
   log(`worker: ${URL_BASE}`);
   log(`tools registered: ${REGISTRY.map((t) => t.name).join(", ")}`);
   log(HAND.note);
-  if (PAIRED) log(`paired as "${PAIRED.name}" (credential in ~/.config/machinectl/machine.json)`);
+  if (MACHINE_CONFIG) log(`signed in as machine "${MACHINE_CONFIG.name}" with your my-ax login`);
   if (!REGISTRY.some((t) => t.name === "shell")) {
     log("[!] shell is terminal-equivalent and stays disabled until MACHINECTL_ENABLE_SHELL=1");
   }
