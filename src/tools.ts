@@ -135,7 +135,8 @@ const shellTool = tool(
   "Run a shell command as the local user. This is terminal-equivalent capability. The command runs inside MACHINECTL_ALLOWED_PATHS, with a scrubbed environment.",
   { type: "object", properties: { command: { type: "string" }, cwd: { type: "string" }, timeoutMs: { type: "number" } }, required: ["command"] },
   z.object({ command: z.string().min(1), cwd: z.string().min(1).optional(), timeoutMs: z.number().int().min(1_000).max(24 * 60 * 60 * 1000).optional() }),
-  async ({ command, cwd, timeoutMs }) => new Promise<string>(async (resolve, reject) => {
+  async ({ command, cwd, timeoutMs }, signal) => new Promise<string>(async (resolve, reject) => {
+    if (signal?.aborted) { reject(new Error("shell cancelled")); return; }
     let safeCwd: string | undefined;
     try { safeCwd = await resolveShellCwd(cwd); } catch (error) { reject(error); return; }
     const child = spawn("bash", ["-lc", command], { cwd: safeCwd, env: shellEnv(), stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32" });
@@ -146,16 +147,34 @@ const shellTool = tool(
     child.stderr.on("data", (data) => { if (stderr.length < SHELL_OUTPUT_CAP) stderr = (stderr + data.toString()).slice(0, SHELL_OUTPUT_CAP); });
     const duration = timeoutMs ?? SHELL_TIMEOUT_MS;
     let settled = false;
+    const stopChild = () => {
+      killTree(child, "SIGTERM");
+      setTimeout(() => killTree(child, "SIGKILL"), SHELL_STOP_GRACE_MS).unref();
+    };
+    const cleanup = () => {
+      activeShells.delete(child);
+      clearTimeout(timeout);
+      signal?.removeEventListener("abort", onAbort);
+    };
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      stopChild();
+      reject(new Error("shell cancelled"));
+    };
     const timeout = setTimeout(() => {
       if (settled) return;
       settled = true;
-      killTree(child, "SIGTERM");
-      setTimeout(() => killTree(child, "SIGKILL"), SHELL_STOP_GRACE_MS).unref();
+      cleanup();
+      stopChild();
       reject(new Error(`shell timed out after ${duration}ms`));
     }, duration);
-    child.on("error", (error) => { activeShells.delete(child); clearTimeout(timeout); if (!settled) { settled = true; reject(error); } });
+    if (signal?.aborted) { onAbort(); return; }
+    signal?.addEventListener("abort", onAbort, { once: true });
+    child.on("error", (error) => { cleanup(); if (!settled) { settled = true; reject(error); } });
     child.on("close", (code) => {
-      activeShells.delete(child); clearTimeout(timeout); if (settled) return; settled = true;
+      cleanup(); if (settled) return; settled = true;
       resolve(`Exit code: ${code ?? "?"}\n${stdout}${stderr.trim() ? `\n--- stderr ---\n${stderr}` : ""}`.trim());
     });
   }),

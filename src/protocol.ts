@@ -20,6 +20,7 @@ export interface PublishedTool {
  *  forwards back as `content[0].text`. Throw to send an error result. */
 export type ToolHandler<Args = Record<string, unknown>> = (
   args: Args,
+  signal?: AbortSignal,
 ) => Promise<string> | string;
 
 /** Daemon-side tool registry entry. `inputSchemaJson` is the JSON-Schema
@@ -50,5 +51,6 @@ export type LaptopFrame =
 /** DOWN: Worker → daemon. */
 export type WorkerFrame =
   | { type: "call"; id: string; opId?: string; tool: string; args: Record<string, unknown> }
+  | { type: "cancel"; id: string }
   | { type: "ping" }
   | { type: "pong" };

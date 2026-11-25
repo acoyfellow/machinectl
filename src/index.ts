@@ -122,12 +122,12 @@ function publishedToolsFor(reg: RegisteredTool[]): PublishedTool[] {
 async function dispatchCall(
   toolName: string,
   args: Record<string, unknown>,
+  signal?: AbortSignal,
 ): Promise<{ ok: true; content: string } | { ok: false; error: string }> {
   const t = REGISTRY.find((r) => r.name === toolName);
   if (!t) {
     return { ok: false, error: `Unknown tool: ${toolName}` };
   }
-  // Validate args against Zod schema before invoking handler.
   const parsed = t.validator.safeParse(args);
   if (!parsed.success) {
     return {
@@ -138,7 +138,7 @@ async function dispatchCall(
     };
   }
   try {
-    const content = await t.handler(parsed.data);
+    const content = await t.handler(parsed.data, signal);
     return { ok: true, content: typeof content === "string" ? content : String(content) };
   } catch (err) {
     return {
@@ -259,19 +259,26 @@ async function connectWith(wsUrl: string, authHeaders: Record<string, string>): 
       }
     }, PING_INTERVAL_MS);
 
+    const activeCalls = new Map<string, AbortController>();
+
     ws.on("message", async (data) => {
       let frame: WorkerFrame;
       try {
         frame = JSON.parse(data.toString());
       } catch {
-        return; // junk; drop
+        return;
       }
       switch (frame.type) {
         case "call": {
+          if (activeCalls.has(frame.id)) return;
+          const controller = new AbortController();
+          activeCalls.set(frame.id, controller);
           const startedAt = Date.now();
-          const run = opLedger.run(frame.opId, () => dispatchCall(frame.tool, frame.args));
+          const run = opLedger.run(frame.opId, () => dispatchCall(frame.tool, frame.args, controller.signal));
           if (run.replayed) log(`call ${frame.tool} opId ${frame.opId} already ran; replaying its result`);
           const result = await run.promise;
+          if (activeCalls.get(frame.id) === controller) activeCalls.delete(frame.id);
+          if (controller.signal.aborted) return;
           const durationMs = Date.now() - startedAt;
           const out: LaptopFrame = result.ok
             ? { type: "result", id: frame.id, ok: true, content: result.content, metrics: { toolExecMs: durationMs, resultBytes: Buffer.byteLength(result.content) } }
@@ -281,12 +288,16 @@ async function connectWith(wsUrl: string, authHeaders: Record<string, string>): 
           } catch (err) {
             logErr("failed to send result:", err);
           }
-          // Light per-call log so the user can see activity locally.
           log(
             `call ${frame.tool} → ${result.ok ? "ok" : "err"} (${
               result.ok ? Buffer.byteLength(result.content) + "b" : result.error.slice(0, 60)
             }, ${durationMs}ms)`,
           );
+          return;
+        }
+        case "cancel": {
+          const controller = activeCalls.get(frame.id);
+          if (controller) controller.abort();
           return;
         }
         case "ping": {
