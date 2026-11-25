@@ -3,9 +3,10 @@ import { existsSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { buildToolRegistry } from "../dist/tools.js";
 
 test("aborting shell kills the entire child process group so delayed writes never land", async () => {
+  process.env.MACHINECTL_ENABLE_SHELL = "1";
+  const { buildToolRegistry } = await import("../dist/tools.js");
   const marker = join(tmpdir(), `machinectl-cancel-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`);
   try { unlinkSync(marker); } catch {}
   const shell = buildToolRegistry().find((t) => t.name === "shell");
